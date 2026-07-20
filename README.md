@@ -41,10 +41,9 @@ All three are rebindable in **Settings → Shortcuts**. Defaults avoid the macOS
 
 ## Install
 
-This is a personal utility — there's no public download. Either grab `Capture-Plus.dmg` directly from the author, or [build it yourself](#build-from-source) (`./scripts/make-dmg.sh` produces it).
-
-1. Open **`Capture-Plus.dmg`** and drag **Capture +** into **Applications**.
-2. **First launch only:** because this is a personal app signed with a self-signed certificate (not notarized by Apple), Gatekeeper blocks the first open. **Right-click** `Capture +.app` in Applications → **Open** → **Open** in the dialog. After that it launches normally.
+1. Download **`Capture-Plus.dmg`** from the [latest release](../../releases/latest).
+2. Open it and drag **Capture +** into **Applications**.
+3. **First launch only:** because this is signed with a self-signed certificate (not notarized by Apple), Gatekeeper blocks the first open. **Right-click** `Capture +.app` in Applications → **Open** → **Open** in the dialog. After that it launches normally.
 
 > [!NOTE]
 > On first use macOS will ask you to grant **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). This is required to record and to capture screenshots. **Microphone** is only requested if you enable mic recording.
@@ -83,14 +82,6 @@ brew install xcodegen
 ## A note on signing & distribution
 
 The app uses a **local self-signed certificate** rather than an Apple Developer ID. On your own Mac this is ideal — the signature is stable, so macOS keeps your granted permissions across rebuilds. The tradeoff is that on **someone else's** Mac, Gatekeeper requires the one-time right-click → Open step above. Clean double-click installs for everyone would require Apple Developer Program membership + notarization.
-
-## Roadmap / parked ideas
-
-Polish inspired by comparing notes with other capture tools — not yet built:
-
-- Apple's native content picker (`SCContentSharingPicker`) for window/display selection
-- Content exclusion (hide the menu bar / dock / wallpaper from a recording)
-- Codec + frame-rate options (H.264 for universal sharing, 30/60 fps)
 
 ## License
 

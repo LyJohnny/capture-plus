@@ -41,9 +41,10 @@ All three are rebindable in **Settings → Shortcuts**. Defaults avoid the macOS
 
 ## Install
 
-1. Download **`Capture-Plus.dmg`** from the [latest release](../../releases/latest).
-2. Open it and drag **Capture +** into **Applications**.
-3. **First launch only:** because this is a personal app signed with a self-signed certificate (not notarized by Apple), Gatekeeper blocks the first open. **Right-click** `Capture +.app` in Applications → **Open** → **Open** in the dialog. After that it launches normally.
+This is a personal utility — there's no public download. Either grab `Capture-Plus.dmg` directly from the author, or [build it yourself](#build-from-source) (`./scripts/make-dmg.sh` produces it).
+
+1. Open **`Capture-Plus.dmg`** and drag **Capture +** into **Applications**.
+2. **First launch only:** because this is a personal app signed with a self-signed certificate (not notarized by Apple), Gatekeeper blocks the first open. **Right-click** `Capture +.app` in Applications → **Open** → **Open** in the dialog. After that it launches normally.
 
 > [!NOTE]
 > On first use macOS will ask you to grant **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). This is required to record and to capture screenshots. **Microphone** is only requested if you enable mic recording.

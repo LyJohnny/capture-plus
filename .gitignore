@@ -1,0 +1,18 @@
+# XcodeGen generates this from project.yml — regenerate per machine with `xcodegen generate`
+CapturePlus.xcodeproj/
+
+# Build products
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# SPM
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Packaged disk images (distribute via GitHub Releases, not the repo)
+dist/

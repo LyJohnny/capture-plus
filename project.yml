@@ -1,0 +1,52 @@
+name: CapturePlus
+options:
+  bundleIdPrefix: com.joh
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: 2.0.0
+
+targets:
+  CapturePlus:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+    dependencies:
+      - package: KeyboardShortcuts
+    info:
+      path: Resources/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleName: "Capture +"
+        CFBundleDisplayName: "Capture +"
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSMicrophoneUsageDescription: "Capture + records your microphone when you enable it for a screen recording."
+        NSHumanReadableCopyright: "Personal utility. Not for distribution."
+    entitlements:
+      path: Resources/CapturePlus.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+    settings:
+      base:
+        PRODUCT_NAME: "Capture +"
+        PRODUCT_BUNDLE_IDENTIFIER: com.joh.captureplus
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Capture Plus Self-Signed"
+        CODE_SIGNING_REQUIRED: "YES"
+        CODE_SIGNING_ALLOWED: "YES"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        OTHER_CODE_SIGN_FLAGS: "--keychain /Users/joh/Library/Keychains/capture-plus-signing.keychain-db --timestamp=none"
+        ENABLE_HARDENED_RUNTIME: false
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        DEAD_CODE_STRIPPING: true
+        COMBINE_HIDPI_IMAGES: true

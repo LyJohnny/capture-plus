@@ -74,6 +74,8 @@ final class AnnotationWindowController: NSWindowController {
     private var textStyleButton: NSButton?
     private var cropApplyButton: NSButton?
     private var cropCancelButton: NSButton?
+    /// Kept so crop mode can temporarily borrow its Return key equivalent.
+    private var saveButton: NSButton?
     private let textStyleVC = TextStyleViewController()
     private var textPopover: NSPopover?
 
@@ -336,7 +338,7 @@ final class AnnotationWindowController: NSWindowController {
         self.thicknessButton = thickness
 
         // Border colour: a compact swatch (opens the colour picker).
-        let stroke = makeWell(color: .systemRed, tooltip: "Border colour", action: #selector(strokeColorChanged(_:)))
+        let stroke = makeWell(color: .systemRed, tooltip: "Border color", action: #selector(strokeColorChanged(_:)))
         self.strokeWell = stroke
 
         // Fill: an ICON toggle (slashed-square = off, filled-square = on) + a swatch,
@@ -354,7 +356,7 @@ final class AnnotationWindowController: NSWindowController {
         fillToggle.translatesAutoresizingMaskIntoConstraints = false
         fillToggle.widthAnchor.constraint(equalToConstant: 30).isActive = true
         self.fillCheck = fillToggle
-        let fill = makeWell(color: .systemYellow, tooltip: "Fill colour", action: #selector(fillColorChanged(_:)))
+        let fill = makeWell(color: .systemYellow, tooltip: "Fill color", action: #selector(fillColorChanged(_:)))
         self.fillWell = fill
 
         // Text-style button (opens the transient "Aa" popover).
@@ -405,6 +407,7 @@ final class AnnotationWindowController: NSWindowController {
         let save = makeButton(title: "Save", action: #selector(saveTapped))
         save.keyEquivalent = "\r"
         save.bezelColor = NSColor.controlAccentColor
+        self.saveButton = save
         let delete = makeButton(title: "Delete", action: #selector(deleteTapped))
         delete.hasDestructiveAction = true
         delete.bezelColor = NSColor.systemRed
@@ -600,6 +603,11 @@ final class AnnotationWindowController: NSWindowController {
     private func enterCropUI() {
         cropApplyButton?.isHidden = false
         cropCancelButton?.isHidden = false
+        // While cropping, Return applies and Esc cancels regardless of first responder.
+        // Save yields its Return so it doesn't clash with Apply for the same key.
+        saveButton?.keyEquivalent = ""
+        cropApplyButton?.keyEquivalent = "\r"
+        cropCancelButton?.keyEquivalent = "\u{1b}"
         toolSegments?.isEnabled = false
         textPopover?.performClose(nil)   // stay out of the way while cropping
     }
@@ -607,6 +615,9 @@ final class AnnotationWindowController: NSWindowController {
     private func exitCropUI() {
         cropApplyButton?.isHidden = true
         cropCancelButton?.isHidden = true
+        cropApplyButton?.keyEquivalent = ""
+        cropCancelButton?.keyEquivalent = ""
+        saveButton?.keyEquivalent = "\r"   // restore Save's default-button Return
         toolSegments?.isEnabled = true
     }
 
@@ -874,7 +885,7 @@ private final class TextStyleViewController: NSViewController {
             row("Size", sizeField, sizeStepper),
             row("Style", traitSegments),
             row("Align", alignSegments),
-            row("Colour", colorWell),
+            row("Color", colorWell),
         ])
         rows.orientation = .vertical
         rows.alignment = .leading

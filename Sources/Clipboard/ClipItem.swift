@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 
 /// One captured pasteboard entry. Owned by the Clipboard module; shared across the app.
 ///
@@ -16,11 +17,21 @@ struct ClipItem: Identifiable, Equatable {
     let id: UUID
     let date: Date
     let kind: Kind
+    /// A small, pre-rendered thumbnail for image items (nil for text / file items).
+    /// Decoded ONCE here at construction — list rows must never re-decode the full-res PNG.
+    let thumbnailImage: NSImage?
 
     init(id: UUID = UUID(), date: Date = Date(), kind: Kind) {
         self.id = id
         self.date = date
         self.kind = kind
+        self.thumbnailImage = Self.makeThumbnail(for: kind)
+    }
+
+    // Custom equality: derived `thumbnailImage` is a function of `kind`, and `NSImage`
+    // isn't `Equatable`, so compare the underlying identity/payload instead.
+    static func == (lhs: ClipItem, rhs: ClipItem) -> Bool {
+        lhs.id == rhs.id && lhs.date == rhs.date && lhs.kind == rhs.kind
     }
 
     // MARK: - Restore
@@ -45,10 +56,28 @@ struct ClipItem: Identifiable, Equatable {
 
     // MARK: - Presentation
 
-    /// A thumbnail for image items (nil for text / file items).
-    var thumbnail: NSImage? {
-        if case .image(let png, _) = kind { return NSImage(data: png) }
-        return nil
+    /// A thumbnail for image items (nil for text / file items). Returns the cached,
+    /// pre-downsampled image built at construction — no per-call full-res PNG decode.
+    var thumbnail: NSImage? { thumbnailImage }
+
+    /// Longest-side pixel size for the cached row thumbnail — enough for the ~46×34pt
+    /// row rendered @2x, with a little headroom.
+    private static let thumbnailMaxPixelSize = 192
+
+    /// Builds a small downsampled thumbnail for image kinds via ImageIO, so list rows
+    /// never decode the full-resolution PNG. Returns nil for non-image kinds.
+    private static func makeThumbnail(for kind: Kind) -> NSImage? {
+        guard case .image(let png, _) = kind,
+              let source = CGImageSourceCreateWithData(png as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: thumbnailMaxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width), height: CGFloat(cg.height)))
     }
 
     /// True for image items (used by the history panel's Images filter).

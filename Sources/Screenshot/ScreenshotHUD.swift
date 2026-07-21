@@ -44,7 +44,7 @@ final class ScreenshotHUDModel: ObservableObject {
     /// row so the icons are self-explanatory. nil = show the default hint.
     @Published var hoveredLabel: String?
 
-    /// True briefly after a Copy tap, to show a "Copied ✓" confirmation.
+    /// True briefly after a Copy tap, to show a "✓ Copied" confirmation.
     @Published var copied = false
 
     var actions: ScreenshotHUDActions
@@ -61,7 +61,7 @@ final class ScreenshotHUDModel: ObservableObject {
         self.actions = actions
     }
 
-    /// Perform the copy, flag the "Copied ✓" state, and let the controller dismiss soon.
+    /// Perform the copy, flag the "✓ Copied" state, and let the controller dismiss soon.
     func performCopy() {
         actions.onCopy()
         copied = true
@@ -173,6 +173,7 @@ struct ScreenshotHUDView: View {
         .fixedSize()
         .onHover { model.hoveredLabel = $0 ? "Save to…" : nil }
         .help("Save to…")
+        .accessibilityLabel("Save to…")
     }
 
     /// Always-visible label: names the hovered control (icons alone aren't obvious), or
@@ -182,7 +183,7 @@ struct ScreenshotHUDView: View {
         // "copied to clipboard" confirmation (green), so it's clear the shot is already
         // safe and dismissing loses nothing.
         let hoveringButton = (model.hoveredLabel != nil) && !model.copied
-        return Text(model.copied ? "Copied ✓" : (model.hoveredLabel ?? restingCaption))
+        return Text(model.copied ? "✓ Copied" : (model.hoveredLabel ?? restingCaption))
             .font(.caption2)
             .foregroundStyle(hoveringButton ? Color.secondary : Color.green)
             .lineLimit(1)
@@ -209,6 +210,8 @@ struct ScreenshotHUDView: View {
         .buttonStyle(.plain)
         .onHover { model.hoveredLabel = $0 ? label : nil }
         .help(label)
+        // Icon-only control: give VoiceOver a spoken label (tooltips aren't read out).
+        .accessibilityLabel(label)
     }
 
     private var closeButton: some View {
@@ -220,6 +223,7 @@ struct ScreenshotHUDView: View {
         }
         .buttonStyle(.plain)
         .help("Close — it's already on your clipboard")
+        .accessibilityLabel("Close")
     }
 }
 
@@ -247,9 +251,6 @@ final class ScreenshotHUDController {
     /// Set after a Copy tap: the 2s dismiss then proceeds regardless of hover.
     private var quickDismissing = false
     private var pendingDismiss: (() -> Void)?
-
-    /// Seconds the HUD stays up with no interaction before it fades away.
-    private let autoDismissInterval: TimeInterval = 5
 
     private let panelSize = NSSize(width: 324, height: 300)
     private let screenMargin: CGFloat = 12
@@ -295,31 +296,36 @@ final class ScreenshotHUDController {
             return
         }
 
+        let finish: () -> Void = { [weak self] in
+            panel.orderOut(nil)
+            // Release the retained full-resolution bitmap. The panel and model are kept
+            // alive and reused between captures, so without this the last screenshot
+            // (potentially several MB) stays pinned in memory until the next capture
+            // overwrites it. show() re-assigns a fresh image before the HUD reappears.
+            self?.model?.image = NSImage(size: .zero)
+            self?.firePendingDismiss()
+        }
+
+        // Respect Reduce Motion: skip the fade and hide instantly.
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            finish()
+            return
+        }
+
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.2
             panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            panel.orderOut(nil)
-            self?.firePendingDismiss()
-        })
+        }, completionHandler: finish)
     }
 
     // MARK: - Dismiss timer
-
-    private func scheduleDismissTimer() {
-        cancelDismissTimer()
-        guard !isHovering else { return }
-        dismissTimer = Timer.scheduledTimer(withTimeInterval: autoDismissInterval, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.dismiss() }
-        }
-    }
 
     private func cancelDismissTimer() {
         dismissTimer?.invalidate()
         dismissTimer = nil
     }
 
-    /// After a Copy tap, keep the "Copied ✓" confirmation up briefly, then dismiss —
+    /// After a Copy tap, keep the "✓ Copied" confirmation up briefly, then dismiss —
     /// regardless of hover, since the user is done with a copy-only snippet.
     private func scheduleQuickDismiss() {
         quickDismissing = true
@@ -415,6 +421,12 @@ final class ScreenshotHUDController {
     }
 
     private func showWithAnimation(_ panel: NSPanel) {
+        // Respect Reduce Motion: show at full opacity immediately, no fade-in.
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            panel.alphaValue = 1
+            panel.orderFrontRegardless()
+            return
+        }
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in

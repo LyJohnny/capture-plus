@@ -117,15 +117,22 @@ final class TrimmerWindowController: NSWindowController {
 
         buildContent(hosting: playerView, in: window)
 
-        // canBeginTrimming flips true once the item becomes ready to play.
-        // Poll it (cheap, and avoids KVO keypath fragility) to keep the Trim
-        // button in sync until the window closes.
+        // canBeginTrimming flips true once the item becomes ready to play, then
+        // never reverts. Poll it (cheap, and avoids KVO keypath fragility) only
+        // until that first true, enabling the Trim button and then stopping the
+        // timer so it doesn't spin for the whole trim session. Tolerance keeps
+        // the (brief) polling power-friendly.
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.isExporting else { return }
-                self.trimButton?.isEnabled = self.playerView?.canBeginTrimming ?? false
+                guard self.playerView?.canBeginTrimming ?? false else { return }
+                self.trimButton?.isEnabled = true
+                // Ready-to-trim doesn't revert; stop polling.
+                self.trimStateTimer?.invalidate()
+                self.trimStateTimer = nil
             }
         }
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         self.trimStateTimer = timer
 

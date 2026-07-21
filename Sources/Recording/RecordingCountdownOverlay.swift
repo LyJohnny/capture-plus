@@ -21,7 +21,7 @@ import SwiftUI
 /// Backing store for the countdown view: the number currently on screen. The
 /// controller mutates `value` once per second; the view animates each change.
 @MainActor
-private final class CountdownModel: ObservableObject {
+final class CountdownModel: ObservableObject {
     @Published var value: Int
 
     init(value: Int) {
@@ -34,13 +34,15 @@ private final class CountdownModel: ObservableObject {
 /// A single large translucent number on a dimmed rounded backdrop, centered in
 /// its container. Each new value fades/scales in via a transition so the tick
 /// reads as a distinct beat.
-private struct CountdownView: View {
+struct CountdownView: View {
     @ObservedObject var model: CountdownModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
-            // Full-screen dimming so the number stays legible over any content.
-            Color.black.opacity(0.18)
+            // A whisper-thin scrim — just enough to keep the number legible over
+            // bright content without darkening the scene like a heavy overlay would.
+            Color.black.opacity(0.08)
                 .ignoresSafeArea()
 
             backdrop
@@ -50,26 +52,33 @@ private struct CountdownView: View {
     }
 
     private var backdrop: some View {
-        RoundedRectangle(cornerRadius: 44, style: .continuous)
-            .fill(.black.opacity(0.35))
-            .background(
-                RoundedRectangle(cornerRadius: 44, style: .continuous)
-                    .fill(.ultraThinMaterial)
+        // Genuinely translucent: the material itself is the fill (no black layer
+        // muddying it), a hairline edge for that refined Apple-HUD look, and a
+        // soft ambient shadow to lift it off the desktop.
+        RoundedRectangle(cornerRadius: 46, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: 46, style: .continuous)
+                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
             )
-            .frame(width: 260, height: 260)
-            .shadow(color: .black.opacity(0.3), radius: 30, y: 10)
+            .frame(width: 240, height: 240)
+            .shadow(color: .black.opacity(0.22), radius: 26, y: 10)
     }
 
     private var number: some View {
         // `id` + transition: swapping the value inserts a fresh Text, so the old
-        // number fades/scales out while the new one fades/scales in.
+        // number fades/scales out while the new one fades/scales in. With Reduce
+        // Motion on we drop the large scale and cross-fade only, keeping the beat
+        // legible without the big zoom.
         Text("\(model.value)")
-            .font(.system(size: 180, weight: .semibold, design: .rounded))
+            .font(.system(size: 176, weight: .semibold, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
+            .foregroundStyle(.white.opacity(0.95))
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
             .id(model.value)
-            .transition(.scale(scale: 0.6).combined(with: .opacity))
+            .transition(reduceMotion
+                ? .opacity
+                : .scale(scale: 0.6).combined(with: .opacity))
     }
 }
 
@@ -164,6 +173,12 @@ final class RecordingCountdownOverlay {
         let next = model.value - 1
         if next <= 0 {
             finish()
+        } else if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            // Reduce Motion: no bouncy spring — a quick cross-fade (paired with the
+            // view's opacity-only transition) so the tick still reads as a beat.
+            withAnimation(.easeInOut(duration: 0.2)) {
+                model.value = next
+            }
         } else {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                 model.value = next

@@ -12,6 +12,12 @@ import AppKit
 /// responder chain to whatever text view is first responder.
 enum MainMenu {
 
+    /// Tag on the application-menu "Settings…" item. The menu-bar owner locates the
+    /// item by this tag after launch to point it at the settings window — MainMenu is
+    /// static and built before the controller that opens Settings exists, so the item
+    /// is left target-less here.
+    static let settingsMenuItemTag = 7_710
+
     /// Installs a freshly built standard menu as `NSApp.mainMenu` and points
     /// `NSApp.windowsMenu` at the Window submenu. Called once at launch.
     static func install() {
@@ -43,10 +49,23 @@ enum MainMenu {
 
         menu.addItem(item("About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
         menu.addItem(.separator())
+        menu.addItem(settingsItem())
+        menu.addItem(.separator())
         menu.addItem(item("Quit \(appName)", #selector(NSApplication.terminate(_:)), key: "q"))
 
         container.submenu = menu
         return container
+    }
+
+    /// The standard "Settings…" item (⌘,). Unlike the editing items this needs a real
+    /// target, but MainMenu is built before the settings-window owner exists — so it's
+    /// left target-less and wired up post-launch by tag (`settingsMenuItemTag`). The
+    /// key equivalent lives here (in `NSApp.mainMenu`) so ⌘, opens Settings from any
+    /// focused Capture + window.
+    private static func settingsItem() -> NSMenuItem {
+        let mi = item("Settings…", Selector(("openSettingsMenu:")), key: ",")
+        mi.tag = settingsMenuItemTag
+        return mi
     }
 
     // MARK: - Edit menu

@@ -16,6 +16,8 @@ enum UITestHarness {
         case "closetest": runCloseConfirmTest()
         case "cliptest": runClipboardTest()
         case "cliprender": renderClipboard()
+        case "countdown": renderCountdown()
+        case "countdownlive": showCountdownLive()
         default:
             NSApp.terminate(nil)
         }
@@ -28,6 +30,49 @@ enum UITestHarness {
         result += ClipboardManager(pasteboard: testPB).debugClassifyTest() + "\n"
         try? result.write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
         exit(0)
+    }
+
+    /// Renders the pre-recording countdown over a colorful "wallpaper" gradient so the
+    /// translucency of the material backdrop is actually visible.
+    private static func renderCountdown() {
+        let model = CountdownModel(value: 3)
+        let root = ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.16, green: 0.44, blue: 0.78),
+                         Color(red: 0.52, green: 0.26, blue: 0.68),
+                         Color(red: 0.90, green: 0.46, blue: 0.40)],
+                startPoint: .topLeading, endPoint: .bottomTrailing)
+            CountdownView(model: model)
+        }
+        .frame(width: 900, height: 620)
+
+        let hosting = NSHostingView(rootView: root)
+        hosting.setFrameSize(NSSize(width: 900, height: 620))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            writePNG(hosting, to: "/tmp/captureplus-countdown.png")
+            exit(0)
+        }
+    }
+
+    /// Shows the REAL countdown window (with its live glass material) over the actual
+    /// desktop and holds it briefly, so an external `screencapture` can grab a faithful
+    /// shot. Materials only composite live, so this is the only way to preview them.
+    private static func showCountdownLive() {
+        let model = CountdownModel(value: 3)
+        guard let screen = NSScreen.main else { exit(1) }
+        let win = NSWindow(contentRect: screen.frame, styleMask: [.borderless],
+                           backing: .buffered, defer: false)
+        win.isOpaque = false
+        win.backgroundColor = .clear
+        win.hasShadow = false
+        win.ignoresMouseEvents = true
+        win.level = .screenSaver
+        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        win.contentView = NSHostingView(rootView: CountdownView(model: model))
+        win.setFrame(screen.frame, display: true)
+        NSApp.activate(ignoringOtherApps: true)
+        win.orderFrontRegardless()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { exit(0) }
     }
 
     private static func renderClipboard() {

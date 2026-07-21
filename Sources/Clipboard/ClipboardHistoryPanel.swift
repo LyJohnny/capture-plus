@@ -67,6 +67,7 @@ final class ClipboardHistoryModel: ObservableObject {
 /// the highlighted row) to pick; arrow keys move the selection; Escape dismisses.
 struct ClipboardHistoryView: View {
     @ObservedObject var model: ClipboardHistoryModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -124,15 +125,29 @@ struct ClipboardHistoryView: View {
     /// the panel auto-dismisses.
     @ViewBuilder private var copiedBannerView: some View {
         if model.copiedBanner {
-            Text("✓ Copied to clipboard")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
-                .background(Capsule().fill(Color.green))
-                .shadow(radius: 6, y: 2)
-                .padding(.bottom, 22)   // bottom toast, so it never covers list items
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            // Apple-HUD style: a frosted capsule with a green checkmark for the success
+            // cue (noticeable) and plain primary text — not a saturated green blob.
+            HStack(spacing: 7) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.green)
+                Text("Copied to clipboard")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(.regularMaterial)
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+            )
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+            .padding(.bottom, 22)   // bottom toast, so it never covers list items
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Copied to clipboard")
+            // Reduce Motion: cross-fade only, no slide-in.
+            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         }
     }
 
@@ -170,8 +185,13 @@ struct ClipboardHistoryView: View {
                 .padding(6)
             }
             .onChange(of: model.selection) { _, newValue in
-                withAnimation(.easeOut(duration: 0.1)) {
+                // Reduce Motion: jump the selection into view instead of animating the scroll.
+                if reduceMotion {
                     proxy.scrollTo(newValue, anchor: .center)
+                } else {
+                    withAnimation(.easeOut(duration: 0.1)) {
+                        proxy.scrollTo(newValue, anchor: .center)
+                    }
                 }
             }
         }
@@ -189,7 +209,7 @@ struct ClipboardHistoryView: View {
             } else {
                 Image(systemName: item.glyphName)
                     .frame(width: 46, height: 34)
-                    .foregroundStyle(selected ? Color.white : Color.secondary)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -205,33 +225,36 @@ struct ClipboardHistoryView: View {
                     Text(item.displayTitle)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .foregroundStyle(selected ? Color.white : Color.primary)
+                        .foregroundStyle(.primary)
                     if let dim = item.dimensionsText {
                         Text(dim)
                             .font(.caption2)
-                            .foregroundStyle(selected ? Color.white.opacity(0.75) : Color.secondary)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 8)
                 Text(Self.relativeFormatter.localizedString(for: item.date, relativeTo: Date()))
                     .font(.caption)
-                    .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
+                    .foregroundStyle(.secondary)
             }
             .contentShape(Rectangle())
             .onTapGesture { model.onPick?(item) }
 
             Button { model.onDelete?(item) } label: {
                 Image(systemName: "trash")
-                    .foregroundStyle(selected ? Color.white.opacity(0.9) : Color.secondary)
+                    .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Delete")
+            .accessibilityLabel("Delete item")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        // Native-List-style selection: a soft accent tint that stays legible under any
+        // accent color (yellow/green included), rather than a solid fill with white text.
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(selected ? Color.accentColor : Color.clear)
+                .fill(selected ? Color.accentColor.opacity(0.22) : Color.clear)
         )
         // Drag an item out of the panel into another app (Finder, Mail, chat, …).
         .onDrag { Self.itemProvider(for: item) }
@@ -365,7 +388,11 @@ final class ClipboardHistoryPanelController: NSObject, NSWindowDelegate {
             onPick(item)                    // copies the picked item to the pasteboard
             // Show a "✓ Copied to clipboard" confirmation, keep the panel up ~2s, then
             // auto-dismiss — so it's clear the click actually copied it.
-            withAnimation(.easeOut(duration: 0.15)) { self.model.copiedBanner = true }
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                self.model.copiedBanner = true
+            } else {
+                withAnimation(.easeOut(duration: 0.15)) { self.model.copiedBanner = true }
+            }
             self.scheduleAutoClose(after: 2.0)
         }
         model.onDismiss = { [weak self] in self?.close() }
@@ -395,6 +422,9 @@ final class ClipboardHistoryPanelController: NSObject, NSWindowDelegate {
             self.escapeMonitor = nil
         }
         model.copiedBanner = false
+        // Release retained image payloads while the panel is closed — the live
+        // subscription above is already torn down, so nothing repopulates this.
+        model.items = []
         panel?.orderOut(nil)
     }
 

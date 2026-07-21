@@ -33,9 +33,13 @@ final class MenuBarController: NSObject {
 
     // MARK: - Recording session state
     private var recordingStartDate: Date?
-    /// Displays discovered for the "Record ▸" submenu. Refreshed each time the
-    /// menu opens; cached so the submenu can be built synchronously.
+    /// Displays discovered for the "Record ▸" submenu. Cached so the submenu can be
+    /// built synchronously on menu open; refreshed only when the screen layout
+    /// actually changes (see `didChangeScreenParametersNotification`), not on every
+    /// open — display enumeration is heavy.
     private var cachedDisplays: [SCDisplay] = []
+    /// Token for the screen-layout-change observer that keeps `cachedDisplays` fresh.
+    private var screenChangeObserver: NSObjectProtocol?
 
     // MARK: - Screenshot purge
     private var screenshotPurgeTimer: Timer?
@@ -55,6 +59,12 @@ final class MenuBarController: NSObject {
         super.init()
     }
 
+    deinit {
+        if let screenChangeObserver {
+            NotificationCenter.default.removeObserver(screenChangeObserver)
+        }
+    }
+
     // MARK: - Install (called once at launch)
     func install() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -69,12 +79,24 @@ final class MenuBarController: NSObject {
         wireRecorder()
         wireNotifier()
         observeSettings()
+        wireSettingsMenuShortcut()
+    }
+
+    /// Point the application menu's "Settings…" item (⌘,) at us. `MainMenu` builds
+    /// that item target-less because it's constructed before this controller exists;
+    /// we resolve it by tag now so ⌘, opens Settings from any Capture + window.
+    private func wireSettingsMenuShortcut() {
+        guard let appMenu = NSApp.mainMenu?.items.first?.submenu,
+              let settingsItem = appMenu.item(withTag: MainMenu.settingsMenuItemTag) else { return }
+        settingsItem.target = self
+        settingsItem.action = #selector(openSettingsMenu(_:))
     }
 
     /// Start background services + register global hotkeys. Called at launch.
     func startServices() {
         clipboard.start()
         startScreenshotPurge()
+        startDisplayObservation()
         hotkeys.register(
             onCaptureRegion: { [weak self] in self?.performCaptureRegion() },
             onToggleRecording: { [weak self] in self?.performToggleRecording() },
@@ -87,13 +109,33 @@ final class MenuBarController: NSObject {
     private func startScreenshotPurge() {
         try? FileManager.default.createDirectory(
             at: settings.screenshotDirectoryURL, withIntermediateDirectories: true)
-        screenshotStore.purgeExpired()
+        // Purging only touches the filesystem — get it off the main thread so launch
+        // isn't blocked scanning the screenshot folder.
+        DispatchQueue.global(qos: .utility).async { [screenshotStore] in
+            screenshotStore.purgeExpired()
+        }
 
         let timer = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.screenshotStore.purgeExpired() }
         }
+        // Hourly cleanup is not time-critical; a wide tolerance lets the OS coalesce
+        // the wake for battery/efficiency.
+        timer.tolerance = 300
         RunLoop.main.add(timer, forMode: .common)
         screenshotPurgeTimer = timer
+    }
+
+    /// Refresh the cached display list once now, then keep it fresh only when the
+    /// screen layout actually changes — instead of re-enumerating on every menu open.
+    private func startDisplayObservation() {
+        // Initial refresh so the "Record ▸" submenu is correct on first open.
+        refreshDisplaysAndRebuildSubmenu()
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshDisplaysAndRebuildSubmenu() }
+        }
     }
 
     func showOnboardingIfNeeded() {
@@ -139,7 +181,8 @@ final class MenuBarController: NSObject {
                           symbol: "clipboard", key: "v", modifiers: [.command, .shift]))
 
         menu.addItem(.separator())
-        menu.addItem(item("Settings…", #selector(openSettingsMenu(_:)), symbol: "gearshape"))
+        menu.addItem(item("Settings…", #selector(openSettingsMenu(_:)),
+                          symbol: "gearshape", key: ",", modifiers: .command))
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Capture +",
@@ -546,6 +589,10 @@ final class MenuBarController: NSObject {
     /// all-displays items, and the hotkey) funnels through here, so the countdown is
     /// applied uniformly. Stop does NOT pass through here, so it's never delayed.
     private func beginRecording(target: RecordingTarget) {
+        // First actual recording: now ask for notification permission (so the
+        // "Recording saved" banner can appear). Deferred from launch so users who
+        // never record aren't prompted out of the blue. No-op on later recordings.
+        notifier.requestAuthorizationIfNeeded()
         let targetScreen = screen(for: target)
         countdownOverlay.run(seconds: settings.recordingCountdownSeconds, on: targetScreen) { [weak self] in
             // Fires on the main thread once the countdown clears (or immediately when
@@ -775,9 +822,10 @@ final class MenuBarController: NSObject {
 extension MenuBarController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         updateRecordMenuTitle()
-        // Refresh the display list so "Record ▸" reflects monitors connected
-        // since the menu was last opened.
-        refreshDisplaysAndRebuildSubmenu()
+        // Rebuild "Record ▸" synchronously from the cached display list — no heavy
+        // re-enumeration here. The cache is kept current by the screen-parameters
+        // observer, so it already reflects monitors connected since last open.
+        rebuildRecordSubmenu()
     }
 }
 
@@ -795,6 +843,9 @@ final class RecordingNotifier: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     private let revealActionID = "CAPTUREPLUS_REVEAL"
     private let categoryID = "CAPTUREPLUS_RECORDING_SAVED"
+    /// Whether we've already asked for notification authorization. The system only
+    /// prompts once regardless, but this avoids redundant requests.
+    private var didRequestAuthorization = false
 
     override init() {
         super.init()
@@ -808,6 +859,16 @@ final class RecordingNotifier: NSObject, UNUserNotificationCenterDelegate {
                                               intentIdentifiers: [],
                                               options: [])
         center.setNotificationCategories([category])
+        // Authorization is NOT requested here — it's deferred to the first recording
+        // (see `requestAuthorizationIfNeeded()`) so launch doesn't prompt users who
+        // never record.
+    }
+
+    /// Requests notification authorization the first time a recording starts. Safe to
+    /// call repeatedly; only the first call reaches the system.
+    func requestAuthorizationIfNeeded() {
+        guard !didRequestAuthorization else { return }
+        didRequestAuthorization = true
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 

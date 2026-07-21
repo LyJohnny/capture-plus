@@ -37,6 +37,12 @@ final class ClipboardManager: ObservableObject {
     private let pasteboard: NSPasteboard
     /// Last `changeCount` we have already processed (or that we produced ourselves).
     private var lastChangeCount: Int
+    /// True once we've primed the baseline for the very first `start()`. Subsequent starts
+    /// are treated as resumes (after a sleep/lock pause) and must NOT re-prime.
+    private var hasPrimed = false
+    /// Sleep/wake + screen-lock observers, removed in `deinit`. Only mutated on the main
+    /// actor (during init); `nonisolated(unsafe)` so the nonisolated `deinit` can read it.
+    nonisolated(unsafe) private var lifecycleObservers: [NSObjectProtocol] = []
 
     /// Pasteboard types that mark an item as sensitive/ephemeral — never stored.
     private let ignoredTypes: Set<NSPasteboard.PasteboardType> = [
@@ -61,35 +67,78 @@ final class ClipboardManager: ObservableObject {
         self.maxItemBytes = maxItemBytes
         self.pasteboard = pasteboard
         self.lastChangeCount = pasteboard.changeCount
+        registerLifecycleObservers()
+    }
+
+    deinit {
+        let nc = NSWorkspace.shared.notificationCenter
+        for token in lifecycleObservers { nc.removeObserver(token) }
     }
 
     // MARK: - Lifecycle
 
-    /// Starts the poll and purge timers. Safe to call more than once.
+    /// Starts the poll and purge timers. Safe to call more than once. Also used to RESUME
+    /// after a sleep/lock pause (see the lifecycle observers).
     func start() {
         guard pollTimer == nil else { return }
-        // Prime so anything already on the pasteboard at launch is not ingested.
-        lastChangeCount = pasteboard.changeCount
+        if !hasPrimed {
+            // First start: prime so anything already on the pasteboard at launch is not ingested.
+            lastChangeCount = pasteboard.changeCount
+            hasPrimed = true
+        } else {
+            // Resume after a pause: DON'T re-prime — keep the baseline from before the pause
+            // and pick up a single change that happened while paused, without duplicating
+            // anything already handled.
+            checkForChange()
+        }
 
+        // `tolerance` lets the OS coalesce these fires with other wake-ups — a big idle
+        // battery win for a ~2 Hz poll — without changing perceived responsiveness.
         let poll = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkForChange() }
         }
+        poll.tolerance = 0.45
         RunLoop.main.add(poll, forMode: .common)
         pollTimer = poll
 
-        let purge = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        // Retention is measured in hours, so the purge cadence can be coarse and very
+        // tolerant — it need not wake the CPU on its own account.
+        let purge = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.purgeExpired() }
         }
+        purge.tolerance = 60
         RunLoop.main.add(purge, forMode: .common)
         purgeTimer = purge
     }
 
-    /// Stops both timers. History is retained in memory.
+    /// Stops both timers. History is retained in memory. Also used to PAUSE polling while
+    /// the screen is asleep or locked (see the lifecycle observers).
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
         purgeTimer?.invalidate()
         purgeTimer = nil
+    }
+
+    // MARK: - Pause / resume on sleep & screen lock
+
+    /// Observes screen sleep/wake and session (screen-lock) changes so we can PAUSE the
+    /// poll timer when it cannot matter — the poll is the app's main idle battery cost —
+    /// and RESUME it on return. Registered once; removed in `deinit`.
+    private func registerLifecycleObservers() {
+        let nc = NSWorkspace.shared.notificationCenter
+        let pause: @Sendable (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.stop() }
+        }
+        let resume: @Sendable (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.start() }
+        }
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            lifecycleObservers.append(nc.addObserver(forName: name, object: nil, queue: .main, using: pause))
+        }
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            lifecycleObservers.append(nc.addObserver(forName: name, object: nil, queue: .main, using: resume))
+        }
     }
 
     // MARK: - Actions

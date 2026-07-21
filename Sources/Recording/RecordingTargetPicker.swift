@@ -151,7 +151,7 @@ private struct WindowPickerView: View {
                         .aspectRatio(contentMode: .fit)
                 } else {
                     Image(systemName: "macwindow")
-                        .foregroundStyle(selected ? Color.white : Color.secondary)
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(width: 24, height: 24)
@@ -159,20 +159,23 @@ private struct WindowPickerView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.appName)
                     .lineLimit(1)
-                    .foregroundStyle(selected ? Color.white : Color.primary)
+                    .foregroundStyle(.primary)
                 Text(row.title)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        // Native-List-style selection: a translucent accent fill with default
+        // foreground colors, so the row reads as selected on any accent — light
+        // accents no longer wash out white-on-solid text.
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(selected ? Color.accentColor : Color.clear)
+                .fill(selected ? Color.accentColor.opacity(0.22) : Color.clear)
         )
         .contentShape(Rectangle())
     }

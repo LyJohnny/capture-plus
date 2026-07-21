@@ -120,7 +120,7 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
 
     // MARK: - Public drawing settings (the "current style" for new objects)
     var tool: Tool = .pen {
-        didSet { onToolChanged?(tool) }
+        didSet { onToolChanged?(tool); refreshCursor() }
     }
     private(set) var strokeColor: NSColor = .systemRed
     private(set) var fillColor: NSColor? = nil
@@ -243,6 +243,16 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
     // Route all undo registration/lookup through the window's undo manager — the same
     // manager the Edit menu drives — so toolbar Undo, Cmd-Z, and the menu share one stack.
     override var undoManager: UndoManager? { window?.undoManager }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Bound the undo stack. Crop/rotate each register an undo closure that retains a
+        // previous FULL-resolution NSImage, so an unbounded history can grow without limit
+        // across a long session. Capping keeps undo useful while letting the oldest
+        // snapshots (and their images) be released.
+        undoManager?.levelsOfUndo = 25
+        refreshCursor()
+    }
 
     override func keyDown(with event: NSEvent) {
         // Direct Cmd-Z / Cmd-Shift-Z fallback. While a text field is editing it is
@@ -462,6 +472,31 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
         let x = (v.x - rect.minX) / scale, y = (v.y - rect.minY) / scale
         return CGPoint(x: min(max(0, x), pixelSize.width), y: min(max(0, y), pixelSize.height))
     }
+
+    // MARK: - Cursor feedback
+
+    /// Cursor over the image area follows the active tool: crosshair for drawing/shape
+    /// tools (and while cropping), I-beam for text, plain arrow for select. Outside the
+    /// image the default arrow applies.
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        let rect = imageLayout().rect
+        guard rect.width > 0, rect.height > 0 else { return }
+        let cursor: NSCursor
+        if isCropping {
+            cursor = .crosshair
+        } else {
+            switch tool {
+            case .select: cursor = .arrow
+            case .text: cursor = .iBeam
+            default: cursor = .crosshair   // pen, highlighter, and every shape tool
+            }
+        }
+        addCursorRect(rect, cursor: cursor)
+    }
+
+    /// Ask AppKit to rebuild our cursor rects after the tool or crop state changes.
+    private func refreshCursor() { window?.invalidateCursorRects(for: self) }
 
     // MARK: - Drawing
 
@@ -973,6 +1008,7 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
         isCropping = true
         cropRect = CGRect(origin: .zero, size: pixelSize)
         needsDisplay = true
+        refreshCursor()
         onCropModeChanged?(true)
     }
 
@@ -981,13 +1017,14 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
         isCropping = false
         cropRect = nil
         needsDisplay = true
+        refreshCursor()
         onCropModeChanged?(false)
     }
 
     func applyCrop() {
         guard isCropping else { return }
         isCropping = false
-        defer { cropRect = nil; needsDisplay = true; onCropModeChanged?(false) }
+        defer { cropRect = nil; needsDisplay = true; refreshCursor(); onCropModeChanged?(false) }
         guard var r = cropRect else { return }
         r = r.intersection(CGRect(origin: .zero, size: pixelSize))
         guard r.width >= 8, r.height >= 8 else { return }

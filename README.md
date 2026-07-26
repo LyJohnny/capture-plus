@@ -43,7 +43,12 @@ All three are rebindable in **Settings → Shortcuts**. Defaults avoid the macOS
 
 1. Download **`Capture-Plus.dmg`** from the [latest release](../../releases/latest).
 2. Open it and drag **Capture +** into **Applications**.
-3. **First launch only:** because this is signed with a self-signed certificate (not notarized by Apple), Gatekeeper blocks the first open. **Right-click** `Capture +.app` in Applications → **Open** → **Open** in the dialog. After that it launches normally.
+3. **First launch only** (self-signed, not notarized, so macOS asks you to approve it once):
+   1. Double-click **Capture +** — macOS says it "could not verify" it → click **Done** (**not** "Move to Trash").
+   2. Open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to "Capture +.app was blocked".
+   3. Confirm with Touch ID / password → **Open**. It launches normally after that.
+
+   > On macOS 15 (Sequoia) / 26 (Tahoe) the old right-click → Open shortcut no longer works — the Privacy & Security → **Open Anyway** path above is the way. The DMG also includes a **"How to Open Capture +.txt"** with these steps.
 
 > [!NOTE]
 > On first use macOS will ask you to grant **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). This is required to record and to capture screenshots. **Microphone** is only requested if you enable mic recording.

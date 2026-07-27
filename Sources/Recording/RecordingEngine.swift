@@ -30,6 +30,10 @@ public enum RecordingError: LocalizedError {
     /// The output URL count didn't match the recording target (e.g. two
     /// displays but one URL). Carries the counts for context.
     case outputURLCountMismatch(expected: Int, got: Int)
+    /// The capture started but nothing is being written to disk — e.g. SCKit failed
+    /// on the first sample buffer. Detected seconds after start so the user isn't told
+    /// at stop time that a long recording was never captured.
+    case notCapturing
     /// SCKit reported it could not add the recording output to the stream.
     case couldNotStartRecordingOutput(underlying: Error?)
     /// Any other SCKit/stream failure, wrapped for context.
@@ -47,6 +51,9 @@ public enum RecordingError: LocalizedError {
             return "A recording is already in progress."
         case .notRecording:
             return "There is no active recording to stop."
+        case .notCapturing:
+            return "This recording isn't capturing anything — macOS didn't start "
+                + "writing video to disk. Stop it and start a new recording."
         case .outputURLCountMismatch(let expected, let got):
             return "Expected \(expected) output file(s) for this recording target "
                 + "but got \(got)."
@@ -115,6 +122,30 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     /// fires with the failure for terminal errors.
     public var onError: ((Error) -> Void)?
 
+    /// Called (on the main queue) a few seconds after a recording starts if nothing is
+    /// being written to disk — i.e. the capture is dead on arrival. This exists so a
+    /// failure SCKit only reports at `stopCapture()` (such as "failure to process first
+    /// sample buffer") surfaces in seconds instead of costing the user an hour.
+    public var onEarlyFailure: ((RecordingError) -> Void)?
+
+    /// Output URLs from the most recent session. Unlike `outputURLs` — cleared when a
+    /// session tears down — this survives failure, so a failed stop can still hand the
+    /// partially written file back to the user instead of orphaning it.
+    public private(set) var lastOutputURLs: [URL] = []
+
+    /// Files from the last session that actually contain data. Used to salvage a
+    /// recording when finishing failed: whatever was captured is still on disk.
+    public func salvageableFiles() -> [URL] {
+        lastOutputURLs.filter { Self.fileSize(of: $0) > 0 }
+    }
+
+    /// Bytes on disk for `url`, or 0 when it's missing.
+    static func fileSize(of url: URL) -> Int64 {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64 else { return 0 }
+        return size
+    }
+
     // MARK: - Private state
 
     /// Active streams (one per display, or a single stream for display/window).
@@ -128,6 +159,14 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
 
     /// Guards against double-delivery of the terminal result.
     private var didFinish: Bool = false
+
+    /// One-shot timer verifying the capture is actually writing to disk shortly after
+    /// it starts. See `onEarlyFailure`.
+    private var startupCheckTimer: Timer?
+
+    /// How long to wait before checking that bytes are hitting the file. Generous
+    /// enough that normal encoder start-up latency can't trigger a false alarm.
+    private static let startupCheckDelay: TimeInterval = 8
 
     // MARK: - Init
 
@@ -311,7 +350,38 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         streams = builtStreams
         recordingOutputs = builtOutputs
         self.outputURLs = outputURLs
+        // Remembered beyond teardown so a failed finish can still surface the file.
+        lastOutputURLs = outputURLs
         isRecording = true
+
+        scheduleStartupCheck()
+    }
+
+    // MARK: - Startup health check
+
+    /// Arm the one-shot check that confirms bytes are reaching the output file(s).
+    private func scheduleStartupCheck() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.startupCheckTimer?.invalidate()
+            let timer = Timer(timeInterval: Self.startupCheckDelay, repeats: false) { [weak self] _ in
+                self?.runStartupCheck()
+            }
+            timer.tolerance = 1
+            RunLoop.main.add(timer, forMode: .common)
+            self.startupCheckTimer = timer
+        }
+    }
+
+    /// If every output file is still empty well after start, the capture is dead on
+    /// arrival — report it now rather than letting the user record for an hour into a
+    /// file that will never materialize.
+    private func runStartupCheck() {
+        guard isRecording, !outputURLs.isEmpty else { return }
+        let nothingWritten = outputURLs.allSatisfy { Self.fileSize(of: $0) == 0 }
+        guard nothingWritten else { return }
+        let cb = onEarlyFailure
+        DispatchQueue.main.async { cb?(.notCapturing) }
     }
 
     /// Stop every active stream, finalize the file(s), and return their URLs.
@@ -434,11 +504,16 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         return (stream, output)
     }
 
-    /// Clear all per-session stream state.
+    /// Clear all per-session stream state. `lastOutputURLs` deliberately survives so a
+    /// failed finish can still salvage the partially written file.
     private func clearSession() {
         streams = []
         recordingOutputs = []
         outputURLs = []
+        DispatchQueue.main.async { [weak self] in
+            self?.startupCheckTimer?.invalidate()
+            self?.startupCheckTimer = nil
+        }
     }
 
     /// Pixel dimensions for a display. `SCDisplay.width/height` are in points;

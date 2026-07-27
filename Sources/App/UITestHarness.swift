@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 /// Debug-only UI render harness. Activated by the `CAPTUREPLUS_RENDER` env var; never runs in
@@ -15,11 +16,74 @@ enum UITestHarness {
         case "texttest": runTextCommitTest()
         case "closetest": runCloseConfirmTest()
         case "cliptest": runClipboardTest()
+        case "rectest": runRecordingTest()
         case "cliprender": renderClipboard()
         case "countdown": renderCountdown()
         case "countdownlive": showCountdownLive()
         default:
             NSApp.terminate(nil)
+        }
+    }
+
+    /// REAL end-to-end recording test: records the main display for 12 s, stops, and
+    /// asserts the file is on disk, playable, and roughly the right duration. 12 s is
+    /// deliberately longer than the engine's 8 s startup health check, so this also
+    /// proves that check does NOT false-alarm on a healthy recording.
+    ///
+    /// Needs Screen Recording permission, and must be launched via `open` so macOS
+    /// attributes the capture to Capture + rather than the parent shell.
+    private static func runRecordingTest() {
+        let engine = RecordingEngine()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("captureplus-rectest-\(UUID().uuidString).mp4")
+        var earlyFired = false
+        engine.onEarlyFailure = { _ in earlyFired = true }
+
+        func report(_ text: String) {
+            try? text.write(toFile: "/tmp/captureplus-selftest.txt",
+                            atomically: true, encoding: .utf8)
+        }
+
+        Task { @MainActor in
+            do {
+                let displays = try await engine.availableDisplays()
+                guard let display = displays.first else {
+                    report("recording=FAIL (no display available)\n"); exit(1)
+                }
+                try await engine.startRecording(
+                    target: .display(display),
+                    captureSystemAudio: false,
+                    includeMicrophone: false,
+                    microphoneDeviceID: nil,
+                    maxHeight: 720,
+                    outputURLs: [url])
+
+                try await Task.sleep(nanoseconds: 12_000_000_000)
+                _ = try await engine.stopRecording()
+                // Give SCKit a moment to finalize the file after stopCapture returns.
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+
+                let bytes = RecordingEngine.fileSize(of: url)
+                let asset = AVURLAsset(url: url)
+                let playable = (try? await asset.load(.isPlayable)) ?? false
+                let seconds = ((try? await asset.load(.duration)) ?? .zero).seconds
+                let salvage = engine.salvageableFiles().count
+
+                let ok = bytes > 0 && playable && seconds > 8 && !earlyFired
+                report("""
+                recording=\(ok ? "PASS" : "FAIL")
+                fileBytes=\(bytes) playable=\(playable) \
+                duration=\(String(format: "%.1f", seconds))s
+                falseEarlyAlarm=\(earlyFired ? "YES (BUG)" : "no")
+                salvageableFiles=\(salvage)
+
+                """)
+                try? FileManager.default.removeItem(at: url)
+                exit(ok ? 0 : 1)
+            } catch {
+                report("recording=FAIL (\(error.localizedDescription))\n")
+                exit(1)
+            }
         }
     }
 

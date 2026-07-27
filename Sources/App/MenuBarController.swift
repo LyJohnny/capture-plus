@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import ScreenCaptureKit
 import UniformTypeIdentifiers
@@ -33,6 +34,9 @@ final class MenuBarController: NSObject {
 
     // MARK: - Recording session state
     private var recordingStartDate: Date?
+    /// Set when the startup health check already told the user a session was capturing
+    /// nothing, so the subsequent finish doesn't stack a second dialog.
+    private var earlyFailureHandled = false
     /// Displays discovered for the "Record ▸" submenu. Cached so the submenu can be
     /// built synchronously on menu open; refreshed only when the screen layout
     /// actually changes (see `didChangeScreenParametersNotification`), not on every
@@ -639,11 +643,18 @@ final class MenuBarController: NSObject {
         case .displays(let displays): count = displays.count
         }
 
-        let urls = (0..<count).map { _ in
-            FileManager.default.temporaryDirectory
-                .appendingPathComponent("Capture +-\(UUID().uuidString).mp4")
+        // Record into a DURABLE folder, never the system temp dir: macOS purges temp
+        // files, and if anything goes wrong at the finish the user must still be able to
+        // find what was captured. Files land in "<save folder>/In Progress" and are
+        // moved out by the trimmer once saved.
+        let inProgress = inProgressDirectory()
+        let stamp = Self.inProgressDateFormatter.string(from: Date())
+        let urls = (0..<count).map { index -> URL in
+            let suffix = count > 1 ? "-\(index + 1)" : ""
+            return inProgress.appendingPathComponent("Recording_\(stamp)\(suffix).mp4")
         }
         recordingStartDate = Date()
+        earlyFailureHandled = false
 
         try await recorder.startRecording(
             target: target,
@@ -654,6 +665,31 @@ final class MenuBarController: NSObject {
             outputURLs: urls
         )
     }
+
+    /// Folder in-progress recordings are written to, created if missing. Lives inside
+    /// the user's recordings folder so a recording that never got saved is still
+    /// somewhere obvious rather than in a temp directory macOS may delete.
+    private func inProgressDirectory() -> URL {
+        let dir = settings.saveDirectoryURL.appendingPathComponent("In Progress", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        } catch {
+            // Fall back to the save folder, then temp, rather than failing to record.
+            if (try? FileManager.default.createDirectory(
+                at: settings.saveDirectoryURL, withIntermediateDirectories: true)) != nil {
+                return settings.saveDirectoryURL
+            }
+            return FileManager.default.temporaryDirectory
+        }
+    }
+
+    /// Timestamp used for in-progress file names (sorts chronologically, no colons).
+    private static let inProgressDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH.mm.ss"
+        return f
+    }()
 
     /// "Window…" — discover shareable windows, let the user pick one, record it.
     private func performRecordWindow() {
@@ -689,19 +725,92 @@ final class MenuBarController: NSObject {
         recorder.onFinish = { [weak self] result in
             guard let self else { return }
             self.updateRecordMenuTitle()
+            // An early-failure alert already told the user this session captured
+            // nothing; don't stack a second dialog (or open a trimmer on an empty file).
+            guard !self.earlyFailureHandled else { return }
+
             switch result {
             case .success(let urls):
-                if urls.count > 1 {
+                // A "successful" stop can still leave empty files if the capture never
+                // wrote anything — treat that as the failure it is.
+                let written = urls.filter { RecordingEngine.fileSize(of: $0) > 0 }
+                guard !written.isEmpty else {
+                    self.presentError(RecordingError.notCapturing)
+                    return
+                }
+                if written.count > 1 {
                     // Multi-display: skip the trimmer (can't sync-trim N files),
                     // save each and post one summary notification.
-                    self.saveMultipleRecordings(urls)
-                } else if let url = urls.first {
+                    self.saveMultipleRecordings(written)
+                } else if let url = written.first {
                     self.presentTrimmer(for: url)
                 }
             case .failure(let error):
+                self.handleRecordingFailure(error)
+            }
+        }
+
+        // Dead-on-arrival capture: tell the user within seconds instead of letting them
+        // record for an hour into a file that will never exist.
+        recorder.onEarlyFailure = { [weak self] error in
+            guard let self, !self.earlyFailureHandled else { return }
+            self.earlyFailureHandled = true
+            Task { @MainActor in
+                try? await self.recorder.stopRecording()   // tear the dead session down
+                self.updateRecordMenuTitle()
                 self.presentError(error)
             }
         }
+    }
+
+    /// A recording failed to finish. NEVER discard what was captured: ScreenCaptureKit
+    /// can fail while finalizing a file that already holds the whole session. If the
+    /// partial file is playable, send it straight to the trimmer so the user loses
+    /// nothing; otherwise keep it and say exactly where it is.
+    private func handleRecordingFailure(_ error: Error) {
+        guard let url = recorder.salvageableFiles().first else {
+            presentError(error)   // genuinely nothing on disk
+            return
+        }
+
+        Task { @MainActor in
+            let asset = AVURLAsset(url: url)
+            let playable = (try? await asset.load(.isPlayable)) ?? false
+            let seconds = ((try? await asset.load(.duration)) ?? .zero).seconds
+
+            if playable, seconds > 0.5 {
+                let alert = NSAlert()
+                alert.messageText = "Recording recovered"
+                alert.informativeText = "macOS reported an error while finishing this "
+                    + "recording, but the footage was saved (\(Self.durationText(seconds))). "
+                    + "Opening it now so you can trim and save it."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Continue")
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+                self.presentTrimmer(for: url)
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Recording couldn't be finished"
+                alert.informativeText = "\(error.localizedDescription)\n\nThe captured data "
+                    + "was kept and NOT deleted, in case it can be repaired:\n\(url.path)"
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Show in Finder")
+                alert.addButton(withTitle: "OK")
+                NSApp.activate(ignoringOtherApps: true)
+                if alert.runModal() == .alertFirstButtonReturn {
+                    self.fileOrganizer.revealInFinder(url)
+                }
+            }
+        }
+    }
+
+    /// "1h 04m" / "4m 12s" / "38s" — for telling the user how much was recovered.
+    private static func durationText(_ seconds: Double) -> String {
+        let s = Int(seconds.rounded())
+        if s >= 3600 { return String(format: "%dh %02dm", s / 3600, (s % 3600) / 60) }
+        if s >= 60 { return String(format: "%dm %02ds", s / 60, s % 60) }
+        return "\(s)s"
     }
 
     private func presentTrimmer(for recordedURL: URL) {

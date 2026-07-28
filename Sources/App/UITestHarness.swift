@@ -22,6 +22,8 @@ enum UITestHarness {
         case "pillstop": runPillStopTest()
         case "repeattest": runRepeatTest()
         case "trimtest": runTrimDeleteTest()
+        case "gaintest": runMicGainTest()
+        case "settingsrender": renderSettings()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
         case "countdown": renderCountdown()
@@ -119,6 +121,106 @@ enum UITestHarness {
                 report("recording=FAIL (\(error.localizedDescription))\n")
                 exit(1)
             }
+        }
+    }
+
+    /// Verifies the microphone software-gain math on a constructed Float32 PCM buffer:
+    /// boost is scaled AND clamped at full scale, 0% mutes, 50% halves.
+    private static func runMicGainTest() {
+        func makeBuffer(_ samples: [Float32]) -> CMSampleBuffer? {
+            var asbd = AudioStreamBasicDescription(
+                mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+                mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
+                mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+            var format: CMAudioFormatDescription?
+            guard CMAudioFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
+                magicCookieSize: 0, magicCookie: nil, extensions: nil,
+                formatDescriptionOut: &format) == noErr, let format else { return nil }
+
+            let byteCount = samples.count * MemoryLayout<Float32>.size
+            var block: CMBlockBuffer?
+            guard CMBlockBufferCreateWithMemoryBlock(
+                allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: byteCount,
+                blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
+                offsetToData: 0, dataLength: byteCount, flags: 0,
+                blockBufferOut: &block) == noErr, let block else { return nil }
+            var source = samples
+            guard CMBlockBufferReplaceDataBytes(
+                with: &source, blockBuffer: block,
+                offsetIntoDestination: 0, dataLength: byteCount) == noErr else { return nil }
+
+            var sampleBuffer: CMSampleBuffer?
+            guard CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+                allocator: kCFAllocatorDefault, dataBuffer: block,
+                formatDescription: format, sampleCount: CMItemCount(samples.count / 2),
+                presentationTimeStamp: .zero, packetDescriptions: nil,
+                sampleBufferOut: &sampleBuffer) == noErr else { return nil }
+            return sampleBuffer
+        }
+
+        func readBack(_ sampleBuffer: CMSampleBuffer, count: Int) -> [Float32] {
+            guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { return [] }
+            var out = [Float32](repeating: .nan, count: count)
+            CMBlockBufferCopyDataBytes(block, atOffset: 0,
+                                       dataLength: count * MemoryLayout<Float32>.size,
+                                       destination: &out)
+            return out
+        }
+
+        func matches(_ got: [Float32], _ want: [Float32]) -> Bool {
+            got.count == want.count
+                && zip(got, want).allSatisfy { abs($0 - $1) < 0.0001 }
+        }
+
+        let input: [Float32] = [0.5, -0.5, 0.9, -0.9, 0.1, 0.0]
+        var verdicts: [String] = []
+
+        // 200%: doubled, clamped at ±1.0.
+        if let buf = makeBuffer(input) {
+            RecordingWriter.applyGain(2.0, to: buf)
+            let want: [Float32] = [1.0, -1.0, 1.0, -1.0, 0.2, 0.0]
+            verdicts.append("boostClamped=\(matches(readBack(buf, count: 6), want) ? "PASS" : "FAIL")")
+        } else { verdicts.append("boostClamped=FAIL (buffer)") }
+
+        // 0%: mute.
+        if let buf = makeBuffer(input) {
+            RecordingWriter.applyGain(0, to: buf)
+            let want = [Float32](repeating: 0, count: 6)
+            verdicts.append("mute=\(matches(readBack(buf, count: 6), want) ? "PASS" : "FAIL")")
+        } else { verdicts.append("mute=FAIL (buffer)") }
+
+        // 50%: halved.
+        if let buf = makeBuffer(input) {
+            RecordingWriter.applyGain(0.5, to: buf)
+            let want: [Float32] = [0.25, -0.25, 0.45, -0.45, 0.05, 0.0]
+            verdicts.append("half=\(matches(readBack(buf, count: 6), want) ? "PASS" : "FAIL")")
+        } else { verdicts.append("half=FAIL (buffer)") }
+
+        let ok = verdicts.allSatisfy { $0.contains("PASS") }
+        try? "micGain=\(ok ? "PASS" : "FAIL")  \(verdicts.joined(separator: "  "))\n"
+            .write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+        exit(ok ? 0 : 1)
+    }
+
+    /// Renders the Settings form with the microphone controls visible. Temporarily
+    /// forces the mic toggle on for the render, then restores the user's real value.
+    private static func renderSettings() {
+        let settings = AppSettings.shared
+        let originalMicToggle = settings.recordMicrophoneByDefault
+        settings.recordMicrophoneByDefault = true
+
+        let hosting = NSHostingView(rootView: SettingsView())
+        hosting.setFrameSize(NSSize(width: 460, height: 1200))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 1200),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            writePNG(hosting, to: "/tmp/captureplus-settings.png")
+            settings.recordMicrophoneByDefault = originalMicToggle
+            exit(0)
         }
     }
 

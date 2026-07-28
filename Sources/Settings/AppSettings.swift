@@ -32,6 +32,8 @@ final class AppSettings: ObservableObject {
         static let recordingCountdownSeconds = "recordingCountdownSeconds"
         static let screenshotKeepEnabled = "screenshotKeepEnabled"
         static let recordingResolutionHeight = "recordingResolutionHeight"
+        static let microphoneDeviceID = "microphoneDeviceID"
+        static let microphoneGainPercent = "microphoneGainPercent"
     }
 
     // MARK: Defaults
@@ -49,6 +51,8 @@ final class AppSettings: ObservableObject {
         static let recordingCountdownSeconds = 3
         static let screenshotKeepEnabled = false
         static let recordingResolutionHeight = 0   // 0 == native
+        static let microphoneDeviceID = ""         // "" == system default input
+        static let microphoneGainPercent = 100     // 100% == unchanged level
         static var saveDirectoryPath: String {
             let movies = FileManager.default
                 .urls(for: .moviesDirectory, in: .userDomainMask)
@@ -188,10 +192,31 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(recordingResolutionHeight, forKey: Key.recordingResolutionHeight) }
     }
 
+    /// `AVCaptureDevice.uniqueID` of the microphone to record from; empty string means
+    /// the system-default input. If the device disappears (unplugged USB mic), the
+    /// recording start path falls back to the default rather than failing.
+    @Published var microphoneDeviceID: String {
+        didSet { defaults.set(microphoneDeviceID, forKey: Key.microphoneDeviceID) }
+    }
+
+    /// Software gain applied to microphone samples while recording, as a percentage.
+    /// 100 = unchanged, 0 = mute, 200 = doubled (clamped at full scale so it can't
+    /// clip past digital maximum). Clamped to 0...200.
+    @Published var microphoneGainPercent: Int {
+        didSet {
+            let clamped = min(max(microphoneGainPercent, 0), 200)
+            if clamped != microphoneGainPercent { microphoneGainPercent = clamped; return }
+            defaults.set(microphoneGainPercent, forKey: Key.microphoneGainPercent)
+        }
+    }
+
     // MARK: Derived
 
     /// Retention window as a `TimeInterval`, for services that take seconds.
     var retention: TimeInterval { Double(retentionHours) * 3600 }
+
+    /// Microphone gain as a multiplier for the recording engine (1.0 == unchanged).
+    var microphoneGain: Double { Double(microphoneGainPercent) / 100 }
 
     /// The save directory as a file URL.
     var saveDirectoryURL: URL { URL(fileURLWithPath: saveDirectoryPath, isDirectory: true) }
@@ -228,6 +253,8 @@ final class AppSettings: ObservableObject {
             Key.recordingCountdownSeconds: Default.recordingCountdownSeconds,
             Key.screenshotKeepEnabled: Default.screenshotKeepEnabled,
             Key.recordingResolutionHeight: Default.recordingResolutionHeight,
+            Key.microphoneDeviceID: Default.microphoneDeviceID,
+            Key.microphoneGainPercent: Default.microphoneGainPercent,
         ])
 
         self.retentionHours = defaults.integer(forKey: Key.retentionHours)
@@ -246,6 +273,8 @@ final class AppSettings: ObservableObject {
         self.recordingCountdownSeconds = defaults.integer(forKey: Key.recordingCountdownSeconds)
         self.screenshotKeepEnabled = defaults.bool(forKey: Key.screenshotKeepEnabled)
         self.recordingResolutionHeight = defaults.integer(forKey: Key.recordingResolutionHeight)
+        self.microphoneDeviceID = defaults.string(forKey: Key.microphoneDeviceID) ?? Default.microphoneDeviceID
+        self.microphoneGainPercent = defaults.integer(forKey: Key.microphoneGainPercent)
         if let data = defaults.data(forKey: Key.screenshotPresets),
            let decoded = try? JSONDecoder().decode([ScreenshotPreset].self, from: data) {
             self.screenshotPresets = decoded

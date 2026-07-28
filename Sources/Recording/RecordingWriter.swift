@@ -65,6 +65,9 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
     private let writer: AVAssetWriter
     private let codec: AVVideoCodecType
     private let fps: Int
+    /// Software gain multiplier for microphone samples (1 == unchanged). Applied
+    /// before the append, with clamping at digital full scale.
+    private let micGain: Float
     private let lock = NSLock()
 
     private var videoInput: AVAssetWriterInput?
@@ -87,10 +90,12 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
          codec: AVVideoCodecType,
          fps: Int,
          captureSystemAudio: Bool,
-         captureMicrophone: Bool) throws {
+         captureMicrophone: Bool,
+         micGain: Float = 1) throws {
         self.url = url
         self.codec = codec
         self.fps = max(1, fps)
+        self.micGain = micGain
 
         try? FileManager.default.removeItem(at: url)
         writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
@@ -151,8 +156,43 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
 
     /// Append microphone audio. Kept on its OWN track — mixing mic and system audio
     /// into one track is the documented cause of corrupt MP4s with this pipeline.
+    /// The user's mic-volume setting is applied here as a software gain.
     func appendMicrophone(_ sampleBuffer: CMSampleBuffer) {
+        if micGain != 1 { Self.applyGain(micGain, to: sampleBuffer) }
         append(sampleBuffer, to: micInput, last: &lastMicPTS)
+    }
+
+    /// Scale Float32 PCM samples in place by `gain`, clamped to [-1, 1] so boosting
+    /// can't wrap past digital full scale. LPCM sample bytes live contiguously in the
+    /// buffer's block, so scaling every float covers interleaved and planar layouts
+    /// alike. Non-Float32 or non-contiguous buffers are left untouched (appended at
+    /// their original level) rather than risking corruption.
+    ///
+    /// Internal (not private) so the self-test harness can verify the math directly.
+    static func applyGain(_ gain: Float, to sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid,
+              let format = sampleBuffer.formatDescription,
+              let asbd = format.audioStreamBasicDescription,
+              asbd.mFormatID == kAudioFormatLinearPCM,
+              (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0,
+              asbd.mBitsPerChannel == 32,
+              let block = CMSampleBufferGetDataBuffer(sampleBuffer)
+        else { return }
+
+        var totalLength = 0
+        var pointer: UnsafeMutablePointer<CChar>?
+        guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil,
+                                          totalLengthOut: &totalLength,
+                                          dataPointerOut: &pointer) == noErr,
+              let raw = pointer,
+              totalLength >= MemoryLayout<Float32>.size,
+              CMBlockBufferIsRangeContiguous(block, atOffset: 0, length: totalLength)
+        else { return }
+
+        let samples = UnsafeMutableRawPointer(raw).assumingMemoryBound(to: Float32.self)
+        for index in 0..<(totalLength / MemoryLayout<Float32>.size) {
+            samples[index] = max(-1, min(1, samples[index] * gain))
+        }
     }
 
     private func append(_ sampleBuffer: CMSampleBuffer,

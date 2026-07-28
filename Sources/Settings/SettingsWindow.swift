@@ -9,6 +9,8 @@ struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     @StateObject private var permissions = SettingsPermissionsModel()
     @State private var isEditingFilename = false
+    /// Connected input devices for the microphone picker, refreshed on appear.
+    @State private var microphones: [(id: String, name: String)] = []
 
     var body: some View {
         ScrollView {
@@ -19,7 +21,22 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(width: 460)
-        .onAppear { permissions.refresh() }
+        .onAppear {
+            permissions.refresh()
+            refreshMicrophones()
+        }
+    }
+
+    /// Enumerate connected microphones and heal a stale selection (device unplugged
+    /// since it was chosen) back to System Default so the picker never shows a
+    /// selection that isn't in its list.
+    private func refreshMicrophones() {
+        microphones = RecordingEngine.availableMicrophones()
+            .map { (id: $0.uniqueID, name: $0.localizedName) }
+        if !settings.microphoneDeviceID.isEmpty,
+           !microphones.contains(where: { $0.id == settings.microphoneDeviceID }) {
+            settings.microphoneDeviceID = ""
+        }
     }
 
     private var form: some View {
@@ -77,6 +94,36 @@ struct SettingsView: View {
             Section("Recording") {
                 Toggle("Capture system audio", isOn: $settings.recordSystemAudio)
                 Toggle("Enable microphone during Screen recording", isOn: $settings.recordMicrophoneByDefault)
+                if settings.recordMicrophoneByDefault {
+                    Picker("Microphone", selection: $settings.microphoneDeviceID) {
+                        Text("System Default").tag("")
+                        ForEach(microphones, id: \.id) { mic in
+                            Text(mic.name).tag(mic.id)
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text("Microphone volume")
+                            Spacer()
+                            Slider(
+                                value: Binding(
+                                    get: { Double(settings.microphoneGainPercent) },
+                                    set: { settings.microphoneGainPercent = Int($0.rounded()) }
+                                ),
+                                in: 0...200, step: 5
+                            )
+                            .frame(width: 150)
+                            .accessibilityLabel("Microphone volume")
+                            Text("\(settings.microphoneGainPercent)%")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, alignment: .trailing)
+                        }
+                        Text("100% is the mic's normal level. Applies from the next recording.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Picker("Countdown before recording", selection: $settings.recordingCountdownSeconds) {
                     Text("Off").tag(0)
                     Text("1 s").tag(1)

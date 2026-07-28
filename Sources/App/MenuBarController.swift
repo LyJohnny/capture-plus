@@ -633,9 +633,7 @@ final class MenuBarController: NSObject {
     /// engine. One URL per output file: 1 for a display/window, N for N displays.
     private func startSession(target: RecordingTarget) async throws {
         let includeMic = settings.recordMicrophoneByDefault
-        let micID: String? = includeMic
-            ? recorder.availableMicrophones().first?.uniqueID
-            : nil
+        let micID: String? = includeMic ? resolveMicrophoneID() : nil
 
         let count: Int
         switch target {
@@ -661,9 +659,21 @@ final class MenuBarController: NSObject {
             captureSystemAudio: settings.recordSystemAudio,
             includeMicrophone: includeMic,
             microphoneDeviceID: micID,
+            microphoneGain: settings.microphoneGain,
             maxHeight: settings.recordingResolutionHeight,
             outputURLs: urls
         )
+    }
+
+    /// The microphone to record from: the user's chosen device if it's still
+    /// connected, else nil (system-default input) — an unplugged USB mic must never
+    /// block a recording from starting.
+    private func resolveMicrophoneID() -> String? {
+        let chosen = settings.microphoneDeviceID
+        guard !chosen.isEmpty else { return nil }
+        let stillPresent = RecordingEngine.availableMicrophones()
+            .contains { $0.uniqueID == chosen }
+        return stillPresent ? chosen : nil
     }
 
     /// Folder in-progress recordings are written to, created if missing. Lives inside

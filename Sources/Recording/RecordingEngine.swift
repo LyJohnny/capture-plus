@@ -255,6 +255,12 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     /// input devices. Returns `uniqueID`s the integrator can pass back into
     /// `startRecording(microphoneDeviceID:)`.
     public func availableMicrophones() -> [AVCaptureDevice] {
+        Self.availableMicrophones()
+    }
+
+    /// Static so UI (the Settings mic picker) can enumerate without an engine.
+    /// Listing devices does not require microphone permission; capturing does.
+    public static func availableMicrophones() -> [AVCaptureDevice] {
         // `.microphone` (macOS 14+) supersedes the deprecated `.builtInMicrophone`;
         // `.external` picks up USB / interface / aggregate input devices.
         let discovery = AVCaptureDevice.DiscoverySession(
@@ -292,6 +298,7 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         captureSystemAudio: Bool,
         includeMicrophone: Bool,
         microphoneDeviceID: String?,
+        microphoneGain: Double = 1.0,
         codec: AVVideoCodecType = .hevc,
         maxHeight: Int = 0,
         outputURLs: [URL]
@@ -335,6 +342,7 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
                 captureSystemAudio: captureSystemAudio,
                 includeMicrophone: includeMicrophone,
                 microphoneDeviceID: microphoneDeviceID,
+                microphoneGain: microphoneGain,
                 codec: codec,
                 outputURL: outputURLs[index]
             )
@@ -496,6 +504,7 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         captureSystemAudio: Bool,
         includeMicrophone: Bool,
         microphoneDeviceID: String?,
+        microphoneGain: Double = 1.0,
         codec: AVVideoCodecType,
         outputURL: URL
     ) throws -> (SCStream, RecordingWriter, StreamOutputAdapter) {
@@ -527,7 +536,8 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
             codec: codec,
             fps: fps,
             captureSystemAudio: captureSystemAudio,
-            captureMicrophone: includeMicrophone)
+            captureMicrophone: includeMicrophone,
+            micGain: Float(microphoneGain))
 
         let adapter = StreamOutputAdapter(writer: writer)
         let stream = SCStream(filter: filter, configuration: config, delegate: self)

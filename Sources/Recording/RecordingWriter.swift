@@ -73,6 +73,17 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var micInput: AVAssetWriterInput?
+    private let wantsSystemAudio: Bool
+    private let wantsMicrophone: Bool
+    /// Source formats observed before the session opens, so each audio track can be
+    /// encoded AT the source's real sample rate / channel count. Forcing a fixed
+    /// 48 kHz stereo onto e.g. a Bluetooth mic delivering 16-24 kHz mono makes the
+    /// converter work against the grain — a recipe for artifacts and failed appends.
+    private var pendingAudioFormat: AudioStreamBasicDescription?
+    private var pendingMicFormat: AudioStreamBasicDescription?
+    /// Audio chunks discarded because the writer input wasn't ready — each one is an
+    /// audible gap, so they're counted and logged instead of vanishing silently.
+    private var droppedAudioChunks = 0
 
     private var started = false
     private var finished = false
@@ -107,13 +118,12 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
         writer.movieFragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
         writer.initialMovieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
 
+        wantsSystemAudio = captureSystemAudio
+        wantsMicrophone = captureMicrophone
         super.init()
-
-        // Audio inputs must exist BEFORE startWriting(); the video input is added
-        // later from the first frame's real dimensions, so they're all in place by the
-        // time writing begins.
-        if captureSystemAudio { audioInput = makeAudioInput() }
-        if captureMicrophone { micInput = makeAudioInput() }
+        // All inputs — video AND audio — are created when the session opens on the
+        // first video frame, so each can be built from its source's REAL format
+        // (dimensions for video, sample rate/channels for audio) instead of guesses.
     }
 
     // MARK: - Sample handling
@@ -151,6 +161,7 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
     /// Append system audio. Dropped until video has opened the session, so the audio
     /// timeline always starts at or after the video's.
     func appendSystemAudio(_ sampleBuffer: CMSampleBuffer) {
+        noteSourceFormat(of: sampleBuffer, isMicrophone: false)
         append(sampleBuffer, to: audioInput, last: &lastAudioPTS)
     }
 
@@ -158,8 +169,24 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
     /// into one track is the documented cause of corrupt MP4s with this pipeline.
     /// The user's mic-volume setting is applied here as a software gain.
     func appendMicrophone(_ sampleBuffer: CMSampleBuffer) {
+        noteSourceFormat(of: sampleBuffer, isMicrophone: true)
         if micGain != 1 { Self.applyGain(micGain, to: sampleBuffer) }
         append(sampleBuffer, to: micInput, last: &lastMicPTS)
+    }
+
+    /// Remember an audio source's real format (first buffer wins) so its track input
+    /// is created to match when the session opens.
+    private func noteSourceFormat(of sampleBuffer: CMSampleBuffer, isMicrophone: Bool) {
+        guard let asbd = sampleBuffer.formatDescription?.audioStreamBasicDescription
+        else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !started else { return }
+        if isMicrophone {
+            if pendingMicFormat == nil { pendingMicFormat = asbd }
+        } else {
+            if pendingAudioFormat == nil { pendingAudioFormat = asbd }
+        }
     }
 
     /// Scale Float32 PCM samples in place by `gain`, clamped to [-1, 1] so boosting
@@ -201,7 +228,13 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
         guard sampleBuffer.isValid else { return }
         lock.lock()
         defer { lock.unlock() }
-        guard !finished, started, let input, input.isReadyForMoreMediaData else { return }
+        guard !finished, started, let input else { return }
+        guard input.isReadyForMoreMediaData else {
+            // A dropped audio chunk is an audible gap — count it so quality problems
+            // are diagnosable from the log instead of vanishing silently.
+            droppedAudioChunks += 1
+            return
+        }
         let pts = sampleBuffer.presentationTimeStamp
         if last.isValid, pts <= last { return }
         if input.append(sampleBuffer) { last = pts }
@@ -226,6 +259,12 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
         writer.add(input)
         videoInput = input
 
+        // Audio tracks are encoded at their SOURCE's sample rate and channel count
+        // (falling back to 48 kHz stereo if no buffer has arrived yet) — converting a
+        // mono 16-24 kHz Bluetooth mic up to forced 48 kHz stereo is where audio
+        // artifacts came from.
+        if wantsSystemAudio { audioInput = makeAudioInput(matching: pendingAudioFormat) }
+        if wantsMicrophone { micInput = makeAudioInput(matching: pendingMicFormat) }
         for audio in [audioInput, micInput].compactMap({ $0 }) where writer.canAdd(audio) {
             writer.add(audio)
         }
@@ -257,6 +296,10 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
         for input in inputs { input.markAsFinished() }
         await writer.finishWriting()
 
+        if droppedAudioChunks > 0 {
+            NSLog("Capture +: %d audio chunk(s) dropped during recording (writer busy) — %@",
+                  droppedAudioChunks, url.lastPathComponent)
+        }
         if writer.status == .failed {
             throw RecordingWriterError.writerFailed(underlying: writer.error)
         }
@@ -288,12 +331,21 @@ final class RecordingWriter: NSObject, @unchecked Sendable {
         return input
     }
 
-    private func makeAudioInput() -> AVAssetWriterInput {
+    /// An AAC audio input shaped to the source's real format. AAC supports 8-48 kHz,
+    /// so a Bluetooth-HFP mic's 16-24 kHz mono encodes natively instead of being
+    /// force-converted. Sample rate is clamped into AAC's supported range and
+    /// channels to stereo at most; 128 kbps per channel.
+    private func makeAudioInput(matching asbd: AudioStreamBasicDescription?) -> AVAssetWriterInput {
+        let sourceRate = asbd?.mSampleRate ?? 0
+        let sampleRate = sourceRate > 0 ? min(max(sourceRate, 8_000), 48_000) : 48_000
+        let sourceChannels = Int(asbd?.mChannelsPerFrame ?? 0)
+        let channels = sourceChannels > 0 ? min(sourceChannels, 2) : 2
+
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 2,
-            AVEncoderBitRateKey: 256_000,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVEncoderBitRateKey: 128_000 * channels,
         ]
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
         input.expectsMediaDataInRealTime = true

@@ -150,8 +150,11 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
 
     /// Active streams (one per display, or a single stream for display/window).
     private var streams: [SCStream] = []
-    /// Recording outputs, parallel to `streams`.
-    private var recordingOutputs: [SCRecordingOutput] = []
+    /// Crash-safe file writers, parallel to `streams`.
+    private var writers: [RecordingWriter] = []
+    /// Per-stream sample-buffer routers, retained for the life of the session
+    /// (`addStreamOutput` does not retain its handler).
+    private var outputAdapters: [StreamOutputAdapter] = []
     /// Destination URLs, parallel to `streams`.
     private var outputURLs: [URL] = []
     /// Count of outputs that have reported `didFinishRecording`.
@@ -164,9 +167,15 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     /// it starts. See `onEarlyFailure`.
     private var startupCheckTimer: Timer?
 
-    /// How long to wait before checking that bytes are hitting the file. Generous
+    /// How long to wait before checking that real frames are being captured. Generous
     /// enough that normal encoder start-up latency can't trigger a false alarm.
     private static let startupCheckDelay: TimeInterval = 8
+
+    /// Queues sample buffers arrive on. Separate per media type, per Apple's sample
+    /// code, at a high QoS so frames aren't dropped under load.
+    private let videoQueue = DispatchQueue(label: "com.captureplus.capture.video", qos: .userInitiated)
+    private let audioQueue = DispatchQueue(label: "com.captureplus.capture.audio", qos: .userInitiated)
+    private let micQueue = DispatchQueue(label: "com.captureplus.capture.mic", qos: .userInitiated)
 
     // MARK: - Init
 
@@ -307,14 +316,15 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
             return FilterSpec(filter: spec.filter, width: max(2, w), height: max(2, h))
         }
 
-        // Build every stream + recording output up front (nothing captures yet).
+        // Build every stream + writer up front (nothing captures yet).
         var builtStreams: [SCStream] = []
-        var builtOutputs: [SCRecordingOutput] = []
+        var builtWriters: [RecordingWriter] = []
+        var builtAdapters: [StreamOutputAdapter] = []
         builtStreams.reserveCapacity(specs.count)
-        builtOutputs.reserveCapacity(specs.count)
+        builtWriters.reserveCapacity(specs.count)
 
         for (index, spec) in specs.enumerated() {
-            let (stream, output) = try makeStream(
+            let (stream, writer, adapter) = try makeStream(
                 filter: spec.filter,
                 pixelWidth: spec.width,
                 pixelHeight: spec.height,
@@ -325,7 +335,8 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
                 outputURL: outputURLs[index]
             )
             builtStreams.append(stream)
-            builtOutputs.append(output)
+            builtWriters.append(writer)
+            builtAdapters.append(adapter)
         }
 
         // Reset terminal-state guards for this session.
@@ -348,7 +359,8 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         }
 
         streams = builtStreams
-        recordingOutputs = builtOutputs
+        writers = builtWriters
+        outputAdapters = builtAdapters
         self.outputURLs = outputURLs
         // Remembered beyond teardown so a failed finish can still surface the file.
         lastOutputURLs = outputURLs
@@ -377,9 +389,12 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     /// arrival — report it now rather than letting the user record for an hour into a
     /// file that will never materialize.
     private func runStartupCheck() {
-        guard isRecording, !outputURLs.isEmpty else { return }
-        let nothingWritten = outputURLs.allSatisfy { Self.fileSize(of: $0) == 0 }
-        guard nothingWritten else { return }
+        guard isRecording, !writers.isEmpty else { return }
+        // Ask the writers directly how many real frames they've taken. This is far
+        // better than watching file size: it distinguishes a genuinely dead capture
+        // from a merely static screen (ScreenCaptureKit only emits frames on change).
+        let nothingCaptured = writers.allSatisfy { $0.frameCount == 0 }
+        guard nothingCaptured else { return }
         let cb = onEarlyFailure
         DispatchQueue.main.async { cb?(.notCapturing) }
     }
@@ -396,28 +411,38 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         }
 
         let activeStreams = streams
-        let urls = outputURLs
+        let activeWriters = writers
 
-        do {
-            for stream in activeStreams {
-                try await stream.stopCapture()
-            }
-        } catch {
-            // Even on a stopCapture error, some files may be partially written;
-            // surface the failure to the caller.
-            isRecording = false
-            clearSession()
-            let mapped = RecordingError.streamFailure(underlying: error)
-            deliverFinish(.failure(mapped))
-            throw mapped
+        // Stop capturing first; a failure here doesn't stop us finalizing the files,
+        // because whatever was already written is still the user's recording.
+        var stopError: Error?
+        for stream in activeStreams {
+            do { try await stream.stopCapture() } catch { stopError = error }
+        }
+
+        // Finalize every file. This can take a while for a long recording and must NOT
+        // be interrupted — an aborted finalize is what corrupts an .mp4.
+        var finished: [URL] = []
+        var writeError: Error?
+        for writer in activeWriters {
+            do { finished.append(try await writer.finish()) } catch { writeError = error }
         }
 
         isRecording = false
         clearSession()
-        // Note: the delegates' didFinishRecording also deliver success; the
-        // didFinish guard prevents a double onFinish.
-        deliverFinish(.success(urls))
-        return urls
+
+        guard !finished.isEmpty else {
+            let underlying = writeError ?? stopError
+            let mapped: RecordingError = (underlying as? RecordingWriterError) != nil
+                ? .notCapturing
+                : .streamFailure(underlying: underlying ?? RecordingWriterError.noFramesWritten)
+            deliverFinish(.failure(mapped))
+            throw mapped
+        }
+
+        lastOutputURLs = finished
+        deliverFinish(.success(finished))
+        return finished
     }
 
     // MARK: - Helpers
@@ -433,8 +458,8 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     private static func resolveFilters(for target: RecordingTarget) throws -> [FilterSpec] {
         switch target {
         case .display(let display):
-            let (w, h) = pixelDimensions(for: display)
             let filter = SCContentFilter(display: display, excludingWindows: [])
+            let (w, h) = pixelDimensions(for: filter, fallback: display)
             return [FilterSpec(filter: filter, width: w, height: h)]
 
         case .window(let window):
@@ -446,15 +471,15 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         case .displays(let displays):
             guard !displays.isEmpty else { throw RecordingError.noDisplayAvailable }
             return displays.map { display in
-                let (w, h) = pixelDimensions(for: display)
                 let filter = SCContentFilter(display: display, excludingWindows: [])
+                let (w, h) = pixelDimensions(for: filter, fallback: display)
                 return FilterSpec(filter: filter, width: w, height: h)
             }
         }
     }
 
-    /// Build a configured `SCStream` + `SCRecordingOutput` pair for one filter.
-    /// Adds the recording output before returning (but does not start capture).
+    /// Build a configured `SCStream` writing into our own `RecordingWriter`, with the
+    /// sample-buffer outputs attached (but capture not yet started).
     private func makeStream(
         filter: SCContentFilter,
         pixelWidth: Int,
@@ -464,51 +489,62 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         microphoneDeviceID: String?,
         codec: AVVideoCodecType,
         outputURL: URL
-    ) throws -> (SCStream, SCRecordingOutput) {
-        // Stream configuration.
+    ) throws -> (SCStream, RecordingWriter, StreamOutputAdapter) {
+        let fps = 60
+
         let config = SCStreamConfiguration()
         config.width = pixelWidth
         config.height = pixelHeight
-        // 60 fps target.
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        // Capture system audio into the same file (per the caller's choice).
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+        // 6 is comfortably inside SCKit's 3...8 range: deep enough to absorb encoder
+        // hiccups without handing the WindowServer a lot of extra surfaces.
+        config.queueDepth = 6
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.colorSpaceName = CGColorSpace.sRGB
+        config.showsCursor = true
+
         config.capturesAudio = captureSystemAudio
+        config.sampleRate = 48_000
+        config.channelCount = 2
         // Don't record Capture +'s own output audio back into the file.
         config.excludesCurrentProcessAudio = true
         if includeMicrophone {
             config.captureMicrophone = true
-            // nil => system-default input device.
-            config.microphoneCaptureDeviceID = microphoneDeviceID
-            // VERIFY: for a multi-display target this taps the same mic device
-            // from N concurrent SCStreams. Each stream gets its own mic capture;
-            // if that ever conflicts, restrict mic to the first stream instead.
+            config.microphoneCaptureDeviceID = microphoneDeviceID   // nil => default input
         }
 
-        // Recording output configuration.
-        let recordingConfig = SCRecordingOutputConfiguration()
-        recordingConfig.outputURL = outputURL
-        recordingConfig.outputFileType = .mp4
-        recordingConfig.videoCodecType = codec
+        let writer = try RecordingWriter(
+            url: outputURL,
+            codec: codec,
+            fps: fps,
+            captureSystemAudio: captureSystemAudio,
+            captureMicrophone: includeMicrophone)
 
-        let output = SCRecordingOutput(configuration: recordingConfig, delegate: self)
+        let adapter = StreamOutputAdapter(writer: writer)
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
 
-        // Add the recording output BEFORE startCapture so the first sample is
-        // written (per SCKit header guidance). addRecordingOutput throws.
+        // Attach outputs BEFORE startCapture so no leading frames are missed.
         do {
-            try stream.addRecordingOutput(output)
+            try stream.addStreamOutput(adapter, type: .screen, sampleHandlerQueue: videoQueue)
+            if captureSystemAudio {
+                try stream.addStreamOutput(adapter, type: .audio, sampleHandlerQueue: audioQueue)
+            }
+            if includeMicrophone {
+                try stream.addStreamOutput(adapter, type: .microphone, sampleHandlerQueue: micQueue)
+            }
         } catch {
             throw RecordingError.couldNotStartRecordingOutput(underlying: error)
         }
 
-        return (stream, output)
+        return (stream, writer, adapter)
     }
 
     /// Clear all per-session stream state. `lastOutputURLs` deliberately survives so a
     /// failed finish can still salvage the partially written file.
     private func clearSession() {
         streams = []
-        recordingOutputs = []
+        writers = []
+        outputAdapters = []
         outputURLs = []
         DispatchQueue.main.async { [weak self] in
             self?.startupCheckTimer?.invalidate()
@@ -516,16 +552,29 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Pixel dimensions for a display. `SCDisplay.width/height` are in points;
-    /// the backing store (Retina) is typically 2×. Query the active CG display
-    /// mode for true pixel dimensions, falling back to the point sizes.
-    private static func pixelDimensions(for display: SCDisplay) -> (Int, Int) {
-        if let mode = CGDisplayCopyDisplayMode(display.displayID) {
-            let w = mode.pixelWidth
-            let h = mode.pixelHeight
-            if w > 0 && h > 0 { return (w, h) }
+    /// Pixel dimensions for a display filter.
+    ///
+    /// Derived from the FILTER (`contentRect` × `pointPixelScale`) — the size
+    /// ScreenCaptureKit itself will deliver — rather than from
+    /// `CGDisplayCopyDisplayMode`, which reports the physical panel mode and diverges
+    /// under scaled Retina modes and mirroring. Handing the encoder dimensions that
+    /// disagree with the delivered frames is a known cause of a capture that produces
+    /// no usable first frame. Rounded to even for H.264/HEVC chroma subsampling.
+    private static func pixelDimensions(
+        for filter: SCContentFilter,
+        fallback display: SCDisplay
+    ) -> (Int, Int) {
+        let scale = CGFloat(filter.pointPixelScale)
+        let rect = filter.contentRect
+        if rect.width >= 1, rect.height >= 1, scale > 0 {
+            return (evenPixels(rect.width * scale), evenPixels(rect.height * scale))
         }
-        return (Int(display.width), Int(display.height))
+        // Fall back to the display mode, then to point sizes — never zero.
+        if let mode = CGDisplayCopyDisplayMode(display.displayID),
+           mode.pixelWidth > 0, mode.pixelHeight > 0 {
+            return (evenPixels(CGFloat(mode.pixelWidth)), evenPixels(CGFloat(mode.pixelHeight)))
+        }
+        return (evenPixels(CGFloat(display.width)), evenPixels(CGFloat(display.height)))
     }
 
     /// Pixel dimensions for a window filter. `contentRect` is in points and
@@ -592,32 +641,29 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     }
 }
 
-// MARK: - SCRecordingOutputDelegate
+// MARK: - Sample-buffer routing
 
-extension RecordingEngine: SCRecordingOutputDelegate {
+/// Routes one stream's sample buffers to its writer. A separate object (rather than
+/// the engine itself) so each stream in a multi-display session feeds its own file
+/// without any lookup on the capture queue.
+final class StreamOutputAdapter: NSObject, SCStreamOutput {
+    private let writer: RecordingWriter
 
-    public func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
-        // No-op: startCapture()'s async completion already signals start.
+    init(writer: RecordingWriter) {
+        self.writer = writer
+        super.init()
     }
 
-    public func recordingOutput(
-        _ recordingOutput: SCRecordingOutput,
-        didFailWithError error: Error
-    ) {
-        // Any output failing is terminal for the whole session.
-        isRecording = false
-        deliverError(error)
-        deliverFinish(.failure(RecordingError.streamFailure(underlying: error)))
-    }
-
-    public func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        // Only deliver success once EVERY output has finished. Count against the
-        // number of outputs we started (captured before clearSession runs).
-        let total = recordingOutputs.count
-        finishedOutputCount += 1
-        guard total > 0, finishedOutputCount >= total else { return }
-        isRecording = false
-        deliverFinish(.success(outputURLs))
+    func stream(_ stream: SCStream,
+                didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+                of type: SCStreamOutputType) {
+        // Handled synchronously on SCKit's queue so the buffer stays valid.
+        switch type {
+        case .screen: writer.appendVideo(sampleBuffer)
+        case .audio: writer.appendSystemAudio(sampleBuffer)
+        case .microphone: writer.appendMicrophone(sampleBuffer)
+        @unknown default: break
+        }
     }
 }
 

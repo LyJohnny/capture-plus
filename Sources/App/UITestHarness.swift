@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import ScreenCaptureKit
 import SwiftUI
 
 /// Debug-only UI render harness. Activated by the `CAPTUREPLUS_RENDER` env var; never runs in
@@ -17,6 +18,8 @@ enum UITestHarness {
         case "closetest": runCloseConfirmTest()
         case "cliptest": runClipboardTest()
         case "rectest": runRecordingTest()
+        case "crashtest": runCrashTest()
+        case "probe": runProbe()
         case "cliprender": renderClipboard()
         case "countdown": renderCountdown()
         case "countdownlive": showCountdownLive()
@@ -39,10 +42,21 @@ enum UITestHarness {
         var earlyFired = false
         engine.onEarlyFailure = { _ in earlyFired = true }
 
+        // Accumulate rather than overwrite, so the pre-flight diagnostics survive
+        // alongside the verdict (they're what let us compare machine to machine).
+        var log = ""
         func report(_ text: String) {
-            try? text.write(toFile: "/tmp/captureplus-selftest.txt",
-                            atomically: true, encoding: .utf8)
+            log += text
+            try? log.write(toFile: "/tmp/captureplus-selftest.txt",
+                           atomically: true, encoding: .utf8)
         }
+
+        // Height under test: 0 = native (what the app defaults to, and what the user's
+        // failing recording used). Overridable so native vs scaled can be compared.
+        let maxHeight = Int(ProcessInfo.processInfo.environment["CAPTUREPLUS_RECTEST_HEIGHT"] ?? "0") ?? 0
+        // System audio on by default in the app — include it here so the test matches
+        // real-world use rather than a stripped-down happy path.
+        let withAudio = (ProcessInfo.processInfo.environment["CAPTUREPLUS_RECTEST_AUDIO"] ?? "1") == "1"
 
         Task { @MainActor in
             do {
@@ -50,13 +64,30 @@ enum UITestHarness {
                 guard let display = displays.first else {
                     report("recording=FAIL (no display available)\n"); exit(1)
                 }
+
+                // DIAGNOSTIC: compare the dimensions we ask SCKit for against the ones
+                // SCKit derives from the content filter. A mismatch here is a prime
+                // suspect for "failure to process first sample buffer".
+                let filter = SCContentFilter(display: display, excludingWindows: [])
+                let filterW = filter.contentRect.width * CGFloat(filter.pointPixelScale)
+                let filterH = filter.contentRect.height * CGFloat(filter.pointPixelScale)
+                var modeW = 0, modeH = 0
+                if let mode = CGDisplayCopyDisplayMode(display.displayID) {
+                    modeW = mode.pixelWidth; modeH = mode.pixelHeight
+                }
+                let dims = "filterDerived=\(Int(filterW))x\(Int(filterH)) "
+                    + "displayMode=\(modeW)x\(modeH) "
+                    + "match=\(Int(filterW) == modeW && Int(filterH) == modeH ? "YES" : "NO (SUSPECT)")"
+
                 try await engine.startRecording(
                     target: .display(display),
-                    captureSystemAudio: false,
+                    captureSystemAudio: withAudio,
                     includeMicrophone: false,
                     microphoneDeviceID: nil,
-                    maxHeight: 720,
+                    maxHeight: maxHeight,
                     outputURLs: [url])
+                report("started (height=\(maxHeight == 0 ? "native" : "\(maxHeight)") "
+                       + "audio=\(withAudio))\n\(dims)\n")
 
                 try await Task.sleep(nanoseconds: 12_000_000_000)
                 _ = try await engine.stopRecording()
@@ -71,7 +102,8 @@ enum UITestHarness {
 
                 let ok = bytes > 0 && playable && seconds > 8 && !earlyFired
                 report("""
-                recording=\(ok ? "PASS" : "FAIL")
+                recording=\(ok ? "PASS" : "FAIL") height=\(maxHeight == 0 ? "native" : "\(maxHeight)") \
+                audio=\(withAudio)
                 fileBytes=\(bytes) playable=\(playable) \
                 duration=\(String(format: "%.1f", seconds))s
                 falseEarlyAlarm=\(earlyFired ? "YES (BUG)" : "no")
@@ -84,6 +116,45 @@ enum UITestHarness {
                 report("recording=FAIL (\(error.localizedDescription))\n")
                 exit(1)
             }
+        }
+    }
+
+    /// Records to a fixed path and never stops — the driver hard-kills it to simulate
+    /// the app or the Mac dying. The point is whether the file is still PLAYABLE.
+    private static func runCrashTest() {
+        let engine = RecordingEngine()
+        let url = URL(fileURLWithPath: "/tmp/captureplus-crashtest.mp4")
+        try? FileManager.default.removeItem(at: url)
+        Task { @MainActor in
+            guard let display = try? await engine.availableDisplays().first else { exit(1) }
+            try? await engine.startRecording(
+                target: .display(display), captureSystemAudio: true,
+                includeMicrophone: false, microphoneDeviceID: nil,
+                maxHeight: 0, outputURLs: [url])
+            while true { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+        }
+    }
+
+    /// Authoritative playability probe for the file at $CAPTUREPLUS_PROBE_PATH — asks
+    /// AVFoundation (what a player actually uses), not Spotlight metadata.
+    private static func runProbe() {
+        let path = ProcessInfo.processInfo.environment["CAPTUREPLUS_PROBE_PATH"] ?? ""
+        let url = URL(fileURLWithPath: path)
+        Task { @MainActor in
+            let asset = AVURLAsset(url: url)
+            let playable = (try? await asset.load(.isPlayable)) ?? false
+            let seconds = ((try? await asset.load(.duration)) ?? .zero).seconds
+            let tracks = (try? await asset.loadTracks(withMediaType: .video))?.count ?? 0
+            let audio = (try? await asset.loadTracks(withMediaType: .audio))?.count ?? 0
+            let bytes = RecordingEngine.fileSize(of: url)
+            try? """
+            probe=\(playable && seconds > 1 ? "PLAYABLE" : "NOT PLAYABLE")
+            path=\(path)
+            bytes=\(bytes) duration=\(String(format: "%.1f", seconds))s \
+            videoTracks=\(tracks) audioTracks=\(audio)
+
+            """.write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+            exit(0)
         }
     }
 

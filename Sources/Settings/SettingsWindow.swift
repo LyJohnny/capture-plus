@@ -95,11 +95,19 @@ struct SettingsView: View {
                 Toggle("Capture system audio", isOn: $settings.recordSystemAudio)
                 Toggle("Enable microphone during Screen recording", isOn: $settings.recordMicrophoneByDefault)
                 if settings.recordMicrophoneByDefault {
-                    Picker("Microphone", selection: $settings.microphoneDeviceID) {
-                        Text("System Default").tag("")
-                        ForEach(microphones, id: \.id) { mic in
-                            Text(mic.name).tag(mic.id)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Picker("Microphone", selection: $settings.microphoneDeviceID) {
+                            Text("Automatic (built-in mic)").tag("")
+                            ForEach(microphones, id: \.id) { mic in
+                                Text(mic.name).tag(mic.id)
+                            }
                         }
+                        Text("Recording from a Bluetooth mic (like AirPods) drops ALL Mac "
+                           + "audio to call quality while recording. Automatic uses the "
+                           + "built-in mic so your headphones keep full quality.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {

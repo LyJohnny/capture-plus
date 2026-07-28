@@ -23,6 +23,7 @@ enum UITestHarness {
         case "repeattest": runRepeatTest()
         case "trimtest": runTrimDeleteTest()
         case "gaintest": runMicGainTest()
+        case "micidtest": runMicResolutionTest()
         case "settingsrender": renderSettings()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
@@ -122,6 +123,25 @@ enum UITestHarness {
                 exit(1)
             }
         }
+    }
+
+    /// Verifies that "Automatic" mic resolution finds the BUILT-IN microphone via
+    /// CoreAudio and that its UID maps to a real AVCaptureDevice — the fix for
+    /// Bluetooth headphones being captured as "system default" and collapsing all
+    /// Mac audio to call quality during recordings.
+    private static func runMicResolutionTest() {
+        let builtInID = RecordingEngine.builtInMicrophoneID()
+        let devices = RecordingEngine.availableMicrophones()
+        let match = devices.first { $0.uniqueID == builtInID }
+        let names = devices.map(\.localizedName).joined(separator: ", ")
+        let ok = builtInID != nil && match != nil
+        try? """
+        micResolution=\(ok ? "PASS" : "FAIL")
+        builtInUID=\(builtInID ?? "nil") resolvesTo=\(match?.localizedName ?? "NO MATCH")
+        allInputs=[\(names)]
+
+        """.write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+        exit(ok ? 0 : 1)
     }
 
     /// Verifies the microphone software-gain math on a constructed Float32 PCM buffer:

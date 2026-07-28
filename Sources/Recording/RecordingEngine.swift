@@ -14,6 +14,7 @@
 import Foundation
 import ScreenCaptureKit
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import CoreGraphics
 
@@ -256,6 +257,68 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     /// `startRecording(microphoneDeviceID:)`.
     public func availableMicrophones() -> [AVCaptureDevice] {
         Self.availableMicrophones()
+    }
+
+    /// The built-in microphone's device UID, or nil on a Mac without one.
+    ///
+    /// Identified via CoreAudio transport type (not name matching, which is
+    /// locale-fragile). This exists because "system default input" is a TRAP when
+    /// Bluetooth headphones are connected: macOS makes them the default input, and
+    /// capturing a Bluetooth mic drops the whole Mac's audio to call-quality HFP for
+    /// the entire recording — live listening AND the captured system audio both
+    /// degrade. "Automatic" therefore prefers the built-in mic.
+    public static func builtInMicrophoneID() -> String? {
+        var listAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &listAddress, 0, nil, &size) == noErr,
+              size > 0 else { return nil }
+        var deviceIDs = [AudioObjectID](
+            repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &listAddress, 0, nil, &size, &deviceIDs) == noErr
+        else { return nil }
+
+        for deviceID in deviceIDs {
+            // Built-in transport only.
+            var transport: UInt32 = 0
+            var transportSize = UInt32(MemoryLayout<UInt32>.size)
+            var transportAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(deviceID, &transportAddress, 0, nil,
+                                             &transportSize, &transport) == noErr,
+                  transport == kAudioDeviceTransportTypeBuiltIn else { continue }
+
+            // Must actually have input streams (skip the built-in speakers).
+            var streamsAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioObjectPropertyScopeInput,
+                mElement: kAudioObjectPropertyElementMain)
+            var streamsSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(deviceID, &streamsAddress, 0, nil,
+                                                 &streamsSize) == noErr,
+                  streamsSize > 0 else { continue }
+
+            // Its UID is what AVCaptureDevice.uniqueID / SCStreamConfiguration use.
+            var uid: CFString = "" as CFString
+            var uidSize = UInt32(MemoryLayout<CFString>.size)
+            var uidAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceUID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            let status = withUnsafeMutablePointer(to: &uid) { pointer in
+                AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, pointer)
+            }
+            if status == noErr {
+                let result = uid as String
+                if !result.isEmpty { return result }
+            }
+        }
+        return nil
     }
 
     /// Static so UI (the Settings mic picker) can enumerate without an engine.

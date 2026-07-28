@@ -665,15 +665,21 @@ final class MenuBarController: NSObject {
         )
     }
 
-    /// The microphone to record from: the user's chosen device if it's still
-    /// connected, else nil (system-default input) — an unplugged USB mic must never
-    /// block a recording from starting.
+    /// The microphone to record from. "Automatic" ("") prefers the BUILT-IN mic, not
+    /// the system default: with Bluetooth headphones connected macOS makes them the
+    /// default input, and capturing a Bluetooth mic collapses ALL Mac audio to
+    /// call-quality for the whole recording — the "everything suddenly sounds loud
+    /// and awful when I hit record" failure. An explicitly chosen device is honored;
+    /// if it's been unplugged, fall back to automatic rather than failing the start.
     private func resolveMicrophoneID() -> String? {
         let chosen = settings.microphoneDeviceID
-        guard !chosen.isEmpty else { return nil }
-        let stillPresent = RecordingEngine.availableMicrophones()
-            .contains { $0.uniqueID == chosen }
-        return stillPresent ? chosen : nil
+        if !chosen.isEmpty,
+           RecordingEngine.availableMicrophones().contains(where: { $0.uniqueID == chosen }) {
+            return chosen
+        }
+        // Automatic: built-in mic when the Mac has one; nil (system default) only
+        // as a last resort (e.g. a Mac mini with no built-in microphone).
+        return RecordingEngine.builtInMicrophoneID()
     }
 
     /// Folder in-progress recordings are written to, created if missing. Lives inside

@@ -326,6 +326,18 @@ final class TrimmerWindowController: NSWindowController {
         finish(with: nil)
     }
 
+    /// Debug-only (UITestHarness): reproduces the delete-while-playing flow and
+    /// reports whether the player was fully detached — the audio-after-delete
+    /// regression check. Plays, runs the discard path, then inspects teardown.
+    func debugPlayDeleteSelfTest() -> String {
+        player?.play()
+        let wasPlaying = (player?.rate ?? 0) > 0
+        discardAndFinish()
+        let detached = player == nil && playerView?.player == nil
+        return "wasPlaying=\(wasPlaying ? "yes" : "NO (test invalid)"); "
+            + "playerDetachedAfterDelete=\(detached ? "PASS" : "FAIL")"
+    }
+
     // MARK: - Persisting to final location
 
     /// Move `tempURL` to its final home. Save now ALWAYS presents the
@@ -540,7 +552,15 @@ final class TrimmerWindowController: NSWindowController {
         guard !didFinish else { return }
         didFinish = true
 
+        // Tear the player down COMPLETELY, not just pause() — AVPlayerView (notably in
+        // trim mode) can keep its internal playback alive past a bare pause, which is
+        // how deleted recordings kept playing audio for seconds after the window left
+        // the screen. Detaching the player from the view and dropping its item makes
+        // silence immediate and deterministic.
         player?.pause()
+        playerView?.player = nil
+        player?.replaceCurrentItem(with: nil)
+        player = nil
         trimStateTimer?.invalidate()
         trimStateTimer = nil
 

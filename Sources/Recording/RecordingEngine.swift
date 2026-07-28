@@ -163,6 +163,10 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     /// Guards against double-delivery of the terminal result.
     private var didFinish: Bool = false
 
+    /// True while `stopRecording()` owns the teardown, so an external-stop delegate
+    /// callback arriving mid-stop doesn't finalize a second time.
+    private var isStopping = false
+
     /// One-shot timer verifying the capture is actually writing to disk shortly after
     /// it starts. See `onEarlyFailure`.
     private var startupCheckTimer: Timer?
@@ -409,6 +413,11 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         guard isRecording, !streams.isEmpty else {
             throw RecordingError.notRecording
         }
+
+        // Claim teardown so a didStopWithError racing in (stopCapture can trigger it)
+        // doesn't run a second finalize.
+        isStopping = true
+        defer { isStopping = false }
 
         let activeStreams = streams
         let activeWriters = writers
@@ -672,10 +681,58 @@ final class StreamOutputAdapter: NSObject, SCStreamOutput {
 extension RecordingEngine: SCStreamDelegate {
 
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
-        // An unexpected stop (e.g. user revoked permission mid-record, display
-        // disconnected). Treat as terminal failure for the whole session.
+        // Fires when the stream stops from OUTSIDE our stopRecording() path. Two very
+        // different cases share this callback:
+        //
+        //  - The user clicked the system indicator's "Stop Sharing" button
+        //    (SCStreamErrorUserStopped, -3817), or the system ended the capture on
+        //    lock/logout/display change (SCStreamErrorSystemStoppedStream, -3821).
+        //    These are NORMAL stops: finalize and deliver success, exactly like a
+        //    menu-bar stop. Treating them as failures showed a false "Recording
+        //    recovered" alarm after every pill-stopped recording.
+        //
+        //  - A genuine mid-capture failure (permission revoked, stream died).
+        //    Finalize the writers FIRST — the fragments on disk are the user's
+        //    footage — then report the failure so the salvage flow can offer it.
+        let nsError = error as NSError
+        let intentional = nsError.domain == SCStreamErrorDomain
+            && (nsError.code == Self.userStoppedCode || nsError.code == Self.systemStoppedCode)
+        Task { [weak self] in
+            await self?.handleExternalStop(error: error, intentional: intentional)
+        }
+    }
+
+    /// SCStreamErrorUserStopped — the system UI's "Stop Sharing" button.
+    private static let userStoppedCode = -3817
+    /// SCStreamErrorSystemStoppedStream (macOS 15+) — lock screen / logout / display change.
+    private static let systemStoppedCode = -3821
+
+    /// Finalize a session that was ended from outside `stopRecording()`.
+    private func handleExternalStop(error: Error, intentional: Bool) async {
+        // Our own stopRecording() already owns teardown; don't double-finalize.
+        guard isRecording, !isStopping else { return }
         isRecording = false
-        deliverError(error)
-        deliverFinish(.failure(Self.mapPermissionError(error)))
+
+        let activeWriters = writers
+        var finished: [URL] = []
+        for writer in activeWriters {
+            if let url = try? await writer.finish() { finished.append(url) }
+        }
+        clearSession()
+
+        if !finished.isEmpty {
+            lastOutputURLs = finished
+            if intentional {
+                deliverFinish(.success(finished))
+            } else {
+                deliverError(error)
+                deliverFinish(.failure(Self.mapPermissionError(error)))
+            }
+        } else {
+            if !intentional { deliverError(error) }
+            deliverFinish(.failure(intentional
+                ? RecordingError.notCapturing
+                : Self.mapPermissionError(error)))
+        }
     }
 }

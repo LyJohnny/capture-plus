@@ -19,6 +19,9 @@ enum UITestHarness {
         case "cliptest": runClipboardTest()
         case "rectest": runRecordingTest()
         case "crashtest": runCrashTest()
+        case "pillstop": runPillStopTest()
+        case "repeattest": runRepeatTest()
+        case "trimtest": runTrimDeleteTest()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
         case "countdown": renderCountdown()
@@ -116,6 +119,156 @@ enum UITestHarness {
                 report("recording=FAIL (\(error.localizedDescription))\n")
                 exit(1)
             }
+        }
+    }
+
+    /// Two consecutive recordings in ONE process — the long-lived menu-bar app's real
+    /// usage pattern. The old ReplayKit-backed API was documented to fail the second
+    /// recording in a session (-5822); this proves our writer doesn't.
+    private static func runRepeatTest() {
+        let engine = RecordingEngine()
+
+        func report(_ text: String) {
+            try? text.write(toFile: "/tmp/captureplus-selftest.txt",
+                            atomically: true, encoding: .utf8)
+        }
+
+        Task { @MainActor in
+            guard let display = try? await engine.availableDisplays().first else {
+                report("repeat=FAIL (no display)\n"); exit(1)
+            }
+            var verdicts: [String] = []
+            for round in 1...2 {
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("captureplus-repeat\(round)-\(UUID().uuidString).mp4")
+                do {
+                    try await engine.startRecording(
+                        target: .display(display), captureSystemAudio: true,
+                        includeMicrophone: false, microphoneDeviceID: nil,
+                        maxHeight: 720, outputURLs: [url])
+                    try await Task.sleep(nanoseconds: 4_000_000_000)
+                    _ = try await engine.stopRecording()
+                    let asset = AVURLAsset(url: url)
+                    let playable = (try? await asset.load(.isPlayable)) ?? false
+                    let seconds = ((try? await asset.load(.duration)) ?? .zero).seconds
+                    verdicts.append("round\(round)=\(playable && seconds > 2 ? "PASS" : "FAIL") "
+                                    + "(\(String(format: "%.1f", seconds))s)")
+                    try? FileManager.default.removeItem(at: url)
+                } catch {
+                    verdicts.append("round\(round)=FAIL (\(error.localizedDescription))")
+                }
+            }
+            let ok = verdicts.allSatisfy { $0.contains("PASS") }
+            report("repeat=\(ok ? "PASS" : "FAIL")  \(verdicts.joined(separator: "  "))\n")
+            exit(ok ? 0 : 1)
+        }
+    }
+
+    /// Simulates the system indicator's "Stop Sharing" button: records for real, then
+    /// injects `didStopWithError` with SCStreamErrorUserStopped (-3817) — the exact
+    /// error that button produces. Must finish as SUCCESS with a playable file; the
+    /// old code treated it as failure and false-alarmed "Recording recovered" on
+    /// every pill-stopped recording.
+    private static func runPillStopTest() {
+        let engine = RecordingEngine()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("captureplus-pillstop-\(UUID().uuidString).mp4")
+
+        func report(_ text: String) {
+            try? text.write(toFile: "/tmp/captureplus-selftest.txt",
+                            atomically: true, encoding: .utf8)
+        }
+
+        Task { @MainActor in
+            guard let display = try? await engine.availableDisplays().first else {
+                report("pillstop=FAIL (no display)\n"); exit(1)
+            }
+            var result: Result<[URL], Error>?
+            engine.onFinish = { result = $0 }
+
+            do {
+                try await engine.startRecording(
+                    target: .display(display), captureSystemAudio: true,
+                    includeMicrophone: false, microphoneDeviceID: nil,
+                    maxHeight: 720, outputURLs: [url])
+            } catch {
+                report("pillstop=FAIL (start: \(error.localizedDescription))\n"); exit(1)
+            }
+
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+
+            // Inject the exact error the system's Stop Sharing button delivers.
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let dummy = SCStream(filter: filter, configuration: SCStreamConfiguration(),
+                                 delegate: nil)
+            let userStopped = NSError(domain: SCStreamErrorDomain, code: -3817,
+                                      userInfo: [NSLocalizedDescriptionKey:
+                                                    "The user stopped the stream."])
+            engine.stream(dummy, didStopWithError: userStopped)
+
+            // Give the finalize path time to finish the file and deliver.
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+
+            switch result {
+            case .success(let urls):
+                let file = urls.first ?? url
+                let asset = AVURLAsset(url: file)
+                let playable = (try? await asset.load(.isPlayable)) ?? false
+                let seconds = ((try? await asset.load(.duration)) ?? .zero).seconds
+                let ok = playable && seconds > 3
+                report("""
+                pillstop=\(ok ? "PASS" : "FAIL") (delivered SUCCESS — no false alarm)
+                playable=\(playable) duration=\(String(format: "%.1f", seconds))s
+
+                """)
+                try? FileManager.default.removeItem(at: file)
+                exit(ok ? 0 : 1)
+            case .failure(let error):
+                report("pillstop=FAIL (delivered FAILURE — would show the false "
+                       + "'Recording recovered' popup: \(error.localizedDescription))\n")
+                exit(1)
+            case nil:
+                report("pillstop=FAIL (no result delivered)\n")
+                exit(1)
+            }
+        }
+    }
+
+    /// Reproduces the audio-after-delete bug: records a short clip, opens the real
+    /// trimmer, plays it, runs the delete/discard path, and asserts the player is
+    /// fully detached (detached player == immediate silence).
+    private static func runTrimDeleteTest() {
+        let engine = RecordingEngine()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("captureplus-trimtest-\(UUID().uuidString).mp4")
+
+        func report(_ text: String) {
+            try? text.write(toFile: "/tmp/captureplus-selftest.txt",
+                            atomically: true, encoding: .utf8)
+        }
+
+        Task { @MainActor in
+            guard let display = try? await engine.availableDisplays().first else {
+                report("trimdelete=FAIL (no display)\n"); exit(1)
+            }
+            do {
+                try await engine.startRecording(
+                    target: .display(display), captureSystemAudio: true,
+                    includeMicrophone: false, microphoneDeviceID: nil,
+                    maxHeight: 720, outputURLs: [url])
+                try await Task.sleep(nanoseconds: 4_000_000_000)
+                _ = try await engine.stopRecording()
+            } catch {
+                report("trimdelete=FAIL (record: \(error.localizedDescription))\n"); exit(1)
+            }
+
+            let trimmer = TrimmerWindowController()
+            trimmer.present(url: url, suggestedName: "Test", date: Date()) { _ in }
+            // Let AVPlayer load the item so play() actually starts audio.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            let verdict = trimmer.debugPlayDeleteSelfTest()
+            report("trimdelete: \(verdict)\n")
+            exit(verdict.contains("PASS") ? 0 : 1)
         }
     }
 

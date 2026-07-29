@@ -34,6 +34,7 @@ final class AppSettings: ObservableObject {
         static let recordingResolutionHeight = "recordingResolutionHeight"
         static let microphoneDeviceID = "microphoneDeviceID"
         static let microphoneGainPercent = "microphoneGainPercent"
+        static let reverseMouseScrolling = "reverseMouseScrolling"
     }
 
     // MARK: Defaults
@@ -53,6 +54,7 @@ final class AppSettings: ObservableObject {
         static let recordingResolutionHeight = 0   // 0 == native
         static let microphoneDeviceID = ""         // "" == system default input
         static let microphoneGainPercent = 100     // 100% == unchanged level
+        static let reverseMouseScrolling = false
         static var saveDirectoryPath: String {
             let movies = FileManager.default
                 .urls(for: .moviesDirectory, in: .userDomainMask)
@@ -210,6 +212,13 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Windows-style scrolling for mice: invert the vertical scroll of mouse events
+    /// only, leaving trackpad natural scrolling untouched. Needs Accessibility
+    /// permission (enforced by the reverser, not here).
+    @Published var reverseMouseScrolling: Bool {
+        didSet { defaults.set(reverseMouseScrolling, forKey: Key.reverseMouseScrolling) }
+    }
+
     // MARK: Derived
 
     /// Retention window as a `TimeInterval`, for services that take seconds.
@@ -255,6 +264,7 @@ final class AppSettings: ObservableObject {
             Key.recordingResolutionHeight: Default.recordingResolutionHeight,
             Key.microphoneDeviceID: Default.microphoneDeviceID,
             Key.microphoneGainPercent: Default.microphoneGainPercent,
+            Key.reverseMouseScrolling: Default.reverseMouseScrolling,
         ])
 
         self.retentionHours = defaults.integer(forKey: Key.retentionHours)
@@ -275,6 +285,7 @@ final class AppSettings: ObservableObject {
         self.recordingResolutionHeight = defaults.integer(forKey: Key.recordingResolutionHeight)
         self.microphoneDeviceID = defaults.string(forKey: Key.microphoneDeviceID) ?? Default.microphoneDeviceID
         self.microphoneGainPercent = defaults.integer(forKey: Key.microphoneGainPercent)
+        self.reverseMouseScrolling = defaults.bool(forKey: Key.reverseMouseScrolling)
         if let data = defaults.data(forKey: Key.screenshotPresets),
            let decoded = try? JSONDecoder().decode([ScreenshotPreset].self, from: data) {
             self.screenshotPresets = decoded

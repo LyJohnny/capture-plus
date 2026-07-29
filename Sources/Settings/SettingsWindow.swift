@@ -11,6 +11,9 @@ struct SettingsView: View {
     @State private var isEditingFilename = false
     /// Connected input devices for the microphone picker, refreshed on appear.
     @State private var microphones: [(id: String, name: String)] = []
+    /// Whether Accessibility permission (needed by the scroll reverser) is granted.
+    /// Refreshed on appear and when the toggle changes.
+    @State private var axTrusted = ScrollReverser.hasPermission
 
     var body: some View {
         ScrollView {
@@ -24,6 +27,7 @@ struct SettingsView: View {
         .onAppear {
             permissions.refresh()
             refreshMicrophones()
+            axTrusted = ScrollReverser.hasPermission
         }
     }
 
@@ -190,6 +194,34 @@ struct SettingsView: View {
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
                         Button("Change…", action: chooseScreenshotDirectory)
+                    }
+                }
+            }
+
+            Section("Mouse") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Windows-style scrolling for mice", isOn: $settings.reverseMouseScrolling)
+                        .onChange(of: settings.reverseMouseScrolling) { _, enabled in
+                            axTrusted = ScrollReverser.hasPermission
+                            if enabled && !axTrusted { ScrollReverser.promptForPermission() }
+                        }
+                    Text("Reverses scroll direction only when scrolling with a mouse — "
+                       + "the trackpad keeps natural scrolling. Applies automatically "
+                       + "whenever a mouse is used.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if settings.reverseMouseScrolling && !axTrusted {
+                    HStack {
+                        Label("Needs Accessibility permission to adjust scrolling.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("Grant…") {
+                            ScrollReverser.promptForPermission()
+                        }
                     }
                 }
             }

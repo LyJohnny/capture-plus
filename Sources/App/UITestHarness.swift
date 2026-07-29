@@ -24,6 +24,7 @@ enum UITestHarness {
         case "trimtest": runTrimDeleteTest()
         case "gaintest": runMicGainTest()
         case "micidtest": runMicResolutionTest()
+        case "scrolltest": runScrollReverseTest()
         case "settingsrender": renderSettings()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
@@ -123,6 +124,54 @@ enum UITestHarness {
                 exit(1)
             }
         }
+    }
+
+    /// Verifies the mouse scroll-reversal transform on synthetic CGEvents (creating
+    /// events needs no permission; only tapping the live stream does):
+    ///  - classic mouse wheel (line-based)      → inverted
+    ///  - smooth mouse wheel (pixel, no phase)  → inverted
+    ///  - trackpad gesture (pixel, with phase)  → untouched
+    private static func runScrollReverseTest() {
+        // Line-unit events carry their value in the line delta; pixel-unit events in
+        // the point delta (the line delta is a small derived value).
+        func lineDelta(_ event: CGEvent) -> Int64 {
+            event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        }
+        func pointDelta(_ event: CGEvent) -> Int64 {
+            event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+        }
+        var verdicts: [String] = []
+
+        if let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                               wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0) {
+            let before = lineDelta(wheel)
+            let touched = ScrollReverser.reverseIfMouseScroll(wheel)
+            let ok = touched && before != 0 && lineDelta(wheel) == -before
+            verdicts.append("mouseWheel=\(ok ? "PASS" : "FAIL (\(before)→\(lineDelta(wheel)))")")
+        } else { verdicts.append("mouseWheel=FAIL (event)") }
+
+        if let smooth = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                wheelCount: 1, wheel1: 5, wheel2: 0, wheel3: 0) {
+            // CGEvent scales pixel input across the linked delta fields, so assert
+            // against the observed pre-transform value, not the constructor argument.
+            let before = pointDelta(smooth)
+            let touched = ScrollReverser.reverseIfMouseScroll(smooth)
+            let ok = touched && before != 0 && pointDelta(smooth) == -before
+            verdicts.append("smoothWheel=\(ok ? "PASS" : "FAIL (\(before)→\(pointDelta(smooth)))")")
+        } else { verdicts.append("smoothWheel=FAIL (event)") }
+
+        if let trackpad = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                  wheelCount: 1, wheel1: 10, wheel2: 0, wheel3: 0) {
+            // Mark as a gesture the way trackpad events are: an active scroll phase.
+            trackpad.setIntegerValueField(.scrollWheelEventScrollPhase, value: 2) // "changed"
+            let touched = ScrollReverser.reverseIfMouseScroll(trackpad)
+            verdicts.append("trackpad=\(!touched && pointDelta(trackpad) == 10 ? "PASS (untouched)" : "FAIL (\(pointDelta(trackpad)))")")
+        } else { verdicts.append("trackpad=FAIL (event)") }
+
+        let ok = verdicts.allSatisfy { $0.contains("PASS") }
+        try? "scrollReverse=\(ok ? "PASS" : "FAIL")  \(verdicts.joined(separator: "  "))\n"
+            .write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+        exit(ok ? 0 : 1)
     }
 
     /// Verifies that "Automatic" mic resolution finds the BUILT-IN microphone via

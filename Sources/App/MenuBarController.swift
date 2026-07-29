@@ -28,6 +28,7 @@ final class MenuBarController: NSObject {
     private let permissions = PermissionsManager()
     private let historyPanel = ClipboardHistoryPanelController()
     private let notifier = RecordingNotifier()
+    private let scrollReverser = ScrollReverser()
 
     private lazy var settingsWindow = SettingsWindowController()
     private lazy var onboarding = OnboardingWindowController()
@@ -101,6 +102,7 @@ final class MenuBarController: NSObject {
         clipboard.start()
         startScreenshotPurge()
         startDisplayObservation()
+        scrollReverser.apply(enabled: settings.reverseMouseScrolling)
         hotkeys.register(
             onCaptureRegion: { [weak self] in self?.performCaptureRegion() },
             onToggleRecording: { [weak self] in self?.performToggleRecording() },
@@ -927,6 +929,13 @@ final class MenuBarController: NSObject {
         settings.$screenshotDirectoryPath
             .sink { [weak self] path in
                 self?.screenshotStore.directory = URL(fileURLWithPath: path, isDirectory: true)
+            }
+            .store(in: &cancellables)
+
+        // Engage/disengage the mouse scroll reverser as the toggle changes.
+        settings.$reverseMouseScrolling
+            .sink { [weak self] enabled in
+                self?.scrollReverser.apply(enabled: enabled)
             }
             .store(in: &cancellables)
     }

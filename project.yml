@@ -25,8 +25,8 @@ targets:
         LSUIElement: true
         CFBundleName: "Capture +"
         CFBundleDisplayName: "Capture +"
-        CFBundleShortVersionString: "0.5.0"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "0.5.1"
+        CFBundleVersion: "6"
         NSMicrophoneUsageDescription: "Capture + records your microphone when you enable it for a screen recording."
         NSHumanReadableCopyright: "Personal utility. Not for distribution."
     entitlements:
@@ -37,8 +37,8 @@ targets:
       base:
         PRODUCT_NAME: "Capture +"
         PRODUCT_BUNDLE_IDENTIFIER: com.joh.captureplus
-        MARKETING_VERSION: "0.5.0"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "0.5.1"
+        CURRENT_PROJECT_VERSION: "6"
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Capture Plus Self-Signed"
         CODE_SIGNING_REQUIRED: "YES"

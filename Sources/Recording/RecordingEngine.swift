@@ -168,6 +168,13 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
     /// callback arriving mid-stop doesn't finalize a second time.
     private var isStopping = false
 
+    /// Fires when a recording hits its maximum duration, stopping it cleanly.
+    private var maxDurationTimer: Timer?
+
+    /// True when the session that just finished was ended by the duration limit
+    /// rather than by the user. Read by the caller in `onFinish` to explain why.
+    public private(set) var lastStopWasAutomatic = false
+
     /// One-shot timer verifying the capture is actually writing to disk shortly after
     /// it starts. See `onEarlyFailure`.
     private var startupCheckTimer: Timer?
@@ -364,6 +371,7 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         microphoneGain: Double = 1.0,
         codec: AVVideoCodecType = .hevc,
         maxHeight: Int = 0,
+        maxDuration: TimeInterval = 0,
         outputURLs: [URL]
     ) async throws {
         guard !isRecording else { throw RecordingError.alreadyRecording }
@@ -440,8 +448,36 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         // Remembered beyond teardown so a failed finish can still surface the file.
         lastOutputURLs = outputURLs
         isRecording = true
+        lastStopWasAutomatic = false
 
         scheduleStartupCheck()
+        scheduleMaxDurationStop(after: maxDuration)
+    }
+
+    // MARK: - Maximum duration
+
+    /// Arm the failsafe that ends a runaway recording. `duration <= 0` disables it.
+    /// The stop runs through the normal `stopRecording()` path, so the file is
+    /// finalized and delivered exactly as if the user had pressed Stop.
+    private func scheduleMaxDurationStop(after duration: TimeInterval) {
+        guard duration > 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.maxDurationTimer?.invalidate()
+            let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
+                guard let self, self.isRecording, !self.isStopping else { return }
+                self.lastStopWasAutomatic = true
+                Task { [weak self] in
+                    // Failure still surfaces through onFinish; nothing is lost either way.
+                    try? await self?.stopRecording()
+                }
+            }
+            // Seconds of slack on a multi-hour limit costs nothing and lets the OS
+            // coalesce the wake.
+            timer.tolerance = 5
+            RunLoop.main.add(timer, forMode: .common)
+            self.maxDurationTimer = timer
+        }
     }
 
     // MARK: - Startup health check
@@ -631,6 +667,8 @@ public final class RecordingEngine: NSObject, @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in
             self?.startupCheckTimer?.invalidate()
             self?.startupCheckTimer = nil
+            self?.maxDurationTimer?.invalidate()
+            self?.maxDurationTimer = nil
         }
     }
 

@@ -136,6 +136,20 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker("Stop automatically after", selection: $settings.maxRecordingMinutes) {
+                        Text("30 minutes").tag(30)
+                        Text("1 hour").tag(60)
+                        Text("90 minutes").tag(90)
+                        Text("2 hours").tag(120)
+                        Text("3 hours").tag(180)
+                        Text("No limit").tag(0)
+                    }
+                    Text(maxRecordingCaption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Picker("Countdown before recording", selection: $settings.recordingCountdownSeconds) {
                     Text("Off").tag(0)
                     Text("1 s").tag(1)
@@ -241,6 +255,30 @@ struct SettingsView: View {
     }
 
     // MARK: Derived labels
+
+    /// Explains the failsafe and, more usefully, how much disk a full-length
+    /// recording would consume at the currently selected resolution.
+    private var maxRecordingCaption: String {
+        guard settings.maxRecordingMinutes > 0 else {
+            return "A forgotten recording will run until you stop it — at roughly "
+                + "\(megabytesPerMinute) MB/min it can fill your disk."
+        }
+        let totalMB = megabytesPerMinute * settings.maxRecordingMinutes
+        let size = totalMB >= 1024
+            ? String(format: "%.1f GB", Double(totalMB) / 1024)
+            : "\(totalMB) MB"
+        return "Failsafe so a forgotten recording can't fill your disk. It stops and "
+            + "saves normally. At this resolution a full-length recording is about \(size)."
+    }
+
+    /// Rough MB-per-minute for the selected recording resolution.
+    private var megabytesPerMinute: Int {
+        switch settings.recordingResolutionHeight {
+        case 720: return 30
+        case 1080: return 60
+        default: return 90     // native
+        }
+    }
 
     /// The main display's native pixel size plus a rough storage estimate.
     private var nativeResolutionLabel: String {

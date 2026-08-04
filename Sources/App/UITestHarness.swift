@@ -25,6 +25,7 @@ enum UITestHarness {
         case "gaintest": runMicGainTest()
         case "micidtest": runMicResolutionTest()
         case "scrolltest": runScrollReverseTest()
+        case "autostoptest": runAutoStopTest()
         case "settingsrender": renderSettings()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
@@ -123,6 +124,61 @@ enum UITestHarness {
                 report("recording=FAIL (\(error.localizedDescription))\n")
                 exit(1)
             }
+        }
+    }
+
+    /// Verifies the max-duration failsafe with a REAL recording: starts one with an
+    /// 8-second limit, never calls stop, and asserts the engine stopped itself, flagged
+    /// the stop as automatic, and produced a playable file of about the right length.
+    private static func runAutoStopTest() {
+        let engine = RecordingEngine()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("captureplus-autostop-\(UUID().uuidString).mp4")
+        let limit: TimeInterval = 8
+
+        func report(_ text: String) {
+            try? text.write(toFile: "/tmp/captureplus-selftest.txt",
+                            atomically: true, encoding: .utf8)
+        }
+
+        Task { @MainActor in
+            guard let display = try? await engine.availableDisplays().first else {
+                report("autoStop=FAIL (no display)\n"); exit(1)
+            }
+            var result: Result<[URL], Error>?
+            engine.onFinish = { result = $0 }
+
+            do {
+                try await engine.startRecording(
+                    target: .display(display), captureSystemAudio: true,
+                    includeMicrophone: false, microphoneDeviceID: nil,
+                    maxHeight: 720, maxDuration: limit, outputURLs: [url])
+            } catch {
+                report("autoStop=FAIL (start: \(error.localizedDescription))\n"); exit(1)
+            }
+
+            // Wait past the limit WITHOUT stopping — the engine must do it itself.
+            try? await Task.sleep(nanoseconds: 16_000_000_000)
+
+            let stoppedItself = !engine.isRecording
+            let flagged = engine.lastStopWasAutomatic
+            var playable = false, seconds = 0.0
+            if case .success(let urls) = result, let file = urls.first {
+                let asset = AVURLAsset(url: file)
+                playable = (try? await asset.load(.isPlayable)) ?? false
+                seconds = ((try? await asset.load(.duration)) ?? .zero).seconds
+                try? FileManager.default.removeItem(at: file)
+            }
+            // Allow generous slack: the timer has 5s tolerance by design.
+            let rightLength = seconds > 4 && seconds < 16
+            let ok = stoppedItself && flagged && playable && rightLength
+            report("""
+            autoStop=\(ok ? "PASS" : "FAIL")
+            stoppedItself=\(stoppedItself) flaggedAutomatic=\(flagged) \
+            playable=\(playable) duration=\(String(format: "%.1f", seconds))s (limit \(Int(limit))s)
+
+            """)
+            exit(ok ? 0 : 1)
         }
     }
 

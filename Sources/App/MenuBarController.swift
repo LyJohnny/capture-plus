@@ -663,6 +663,7 @@ final class MenuBarController: NSObject {
             microphoneDeviceID: micID,
             microphoneGain: settings.microphoneGain,
             maxHeight: settings.recordingResolutionHeight,
+            maxDuration: settings.maxRecordingDuration,
             outputURLs: urls
         )
     }
@@ -755,6 +756,11 @@ final class MenuBarController: NSObject {
                 guard !written.isEmpty else {
                     self.presentError(RecordingError.notCapturing)
                     return
+                }
+                // The duration failsafe may have ended this while the user was away —
+                // say so, since the trimmer appearing on its own is otherwise a mystery.
+                if self.recorder.lastStopWasAutomatic {
+                    self.notifier.notifyAutoStopped(minutes: self.settings.maxRecordingMinutes)
                 }
                 if written.count > 1 {
                     // Multi-display: skip the trimmer (can't sync-trim N files),
@@ -1004,6 +1010,21 @@ final class RecordingNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard !didRequestAuthorization else { return }
         didRequestAuthorization = true
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    /// Explains an automatic stop: the recording hit the duration failsafe. The
+    /// footage is safe — the trimmer is waiting with it.
+    func notifyAutoStopped(minutes: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Recording stopped automatically"
+        let hours = minutes / 60, mins = minutes % 60
+        let limit = hours > 0
+            ? (mins > 0 ? "\(hours)h \(mins)m" : "\(hours) hour\(hours == 1 ? "" : "s")")
+            : "\(minutes) minutes"
+        content.body = "It reached the \(limit) limit. Your recording is ready to trim and save."
+        let request = UNNotificationRequest(identifier: UUID().uuidString,
+                                            content: content, trigger: nil)
+        center.add(request, withCompletionHandler: nil)
     }
 
     func notifySaved(url: URL) {

@@ -35,6 +35,7 @@ final class AppSettings: ObservableObject {
         static let microphoneDeviceID = "microphoneDeviceID"
         static let microphoneGainPercent = "microphoneGainPercent"
         static let reverseMouseScrolling = "reverseMouseScrolling"
+        static let maxRecordingMinutes = "maxRecordingMinutes"
     }
 
     // MARK: Defaults
@@ -55,6 +56,7 @@ final class AppSettings: ObservableObject {
         static let microphoneDeviceID = ""         // "" == system default input
         static let microphoneGainPercent = 100     // 100% == unchanged level
         static let reverseMouseScrolling = false
+        static let maxRecordingMinutes = 120   // 2 h failsafe against runaway recordings
         static var saveDirectoryPath: String {
             let movies = FileManager.default
                 .urls(for: .moviesDirectory, in: .userDomainMask)
@@ -219,6 +221,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(reverseMouseScrolling, forKey: Key.reverseMouseScrolling) }
     }
 
+    /// Failsafe: a recording stops itself after this many minutes so a forgotten
+    /// session can't fill the disk. `0` disables the limit. Clamped to 0...720 (12 h).
+    @Published var maxRecordingMinutes: Int {
+        didSet {
+            let clamped = min(max(maxRecordingMinutes, 0), 720)
+            if clamped != maxRecordingMinutes { maxRecordingMinutes = clamped; return }
+            defaults.set(maxRecordingMinutes, forKey: Key.maxRecordingMinutes)
+        }
+    }
+
     // MARK: Derived
 
     /// Retention window as a `TimeInterval`, for services that take seconds.
@@ -226,6 +238,9 @@ final class AppSettings: ObservableObject {
 
     /// Microphone gain as a multiplier for the recording engine (1.0 == unchanged).
     var microphoneGain: Double { Double(microphoneGainPercent) / 100 }
+
+    /// Maximum recording length in seconds for the engine (0 == no limit).
+    var maxRecordingDuration: TimeInterval { Double(maxRecordingMinutes) * 60 }
 
     /// The save directory as a file URL.
     var saveDirectoryURL: URL { URL(fileURLWithPath: saveDirectoryPath, isDirectory: true) }
@@ -265,6 +280,7 @@ final class AppSettings: ObservableObject {
             Key.microphoneDeviceID: Default.microphoneDeviceID,
             Key.microphoneGainPercent: Default.microphoneGainPercent,
             Key.reverseMouseScrolling: Default.reverseMouseScrolling,
+            Key.maxRecordingMinutes: Default.maxRecordingMinutes,
         ])
 
         self.retentionHours = defaults.integer(forKey: Key.retentionHours)
@@ -286,6 +302,7 @@ final class AppSettings: ObservableObject {
         self.microphoneDeviceID = defaults.string(forKey: Key.microphoneDeviceID) ?? Default.microphoneDeviceID
         self.microphoneGainPercent = defaults.integer(forKey: Key.microphoneGainPercent)
         self.reverseMouseScrolling = defaults.bool(forKey: Key.reverseMouseScrolling)
+        self.maxRecordingMinutes = defaults.integer(forKey: Key.maxRecordingMinutes)
         if let data = defaults.data(forKey: Key.screenshotPresets),
            let decoded = try? JSONDecoder().decode([ScreenshotPreset].self, from: data) {
             self.screenshotPresets = decoded

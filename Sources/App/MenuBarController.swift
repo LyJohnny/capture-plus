@@ -99,6 +99,9 @@ final class MenuBarController: NSObject {
 
     /// Start background services + register global hotkeys. Called at launch.
     func startServices() {
+        // First, before anything can start a new recording: file any recording left
+        // stranded by a quit/crash/power loss while it waited for Save/Delete.
+        recoverStrandedRecordings()
         clipboard.start()
         startScreenshotPurge()
         startDisplayObservation()
@@ -599,6 +602,14 @@ final class MenuBarController: NSObject {
         // "Recording saved" banner can appear). Deferred from launch so users who
         // never record aren't prompted out of the blue. No-op on later recordings.
         notifier.requestAuthorizationIfNeeded()
+
+        // A previous recording still waiting in its trimmer would otherwise be covered
+        // by the next trimmer and buried when that one is saved. Starting a new
+        // recording is the clear signal the user has moved on: file the waiting one
+        // (untrimmed) now — before the countdown, so its window is also off screen and
+        // can't end up captured in the new recording.
+        TrimmerWindowController.autoSavePending(into: settings.saveDirectoryURL)
+
         let targetScreen = screen(for: target)
         countdownOverlay.run(seconds: settings.recordingCountdownSeconds, on: targetScreen) { [weak self] in
             // Fires on the main thread once the countdown clears (or immediately when
@@ -683,6 +694,24 @@ final class MenuBarController: NSObject {
         // Automatic: built-in mic when the Mac has one; nil (system default) only
         // as a last resort (e.g. a Mac mini with no built-in microphone).
         return RecordingEngine.builtInMicrophoneID()
+    }
+
+    /// Files recordings stranded in "In Progress" into the default save folder and
+    /// says so. The folder listing is snapshotted synchronously here — at launch, so
+    /// no session is running — which guarantees a new recording's file is never
+    /// swept up by the (async) playability checks that follow.
+    private func recoverStrandedRecordings() {
+        let stranded = FileOrganizer.strandedRecordings(in: inProgressDirectory())
+        guard !stranded.isEmpty else { return }
+        let directory = settings.saveDirectoryURL
+        let template = settings.recordingFilenameTemplate
+        let organizer = fileOrganizer
+        Task { [weak self] in
+            let saved = await organizer.recoverRecordings(stranded, into: directory, template: template)
+            guard let self, !saved.isEmpty else { return }
+            self.notifier.requestAuthorizationIfNeeded()
+            for url in saved { self.notifier.notifySaved(url: url, autoSaved: true) }
+        }
     }
 
     /// Folder in-progress recordings are written to, created if missing. Lives inside
@@ -847,11 +876,18 @@ final class MenuBarController: NSObject {
         // The trimmer now owns the full save lifecycle (trim → export → save/
         // discard) and returns the FINAL saved URL, or nil if discarded (in which
         // case it already deleted the raw temp file).
-        trimmer.present(url: recordedURL, suggestedName: "Recording", date: date) { [weak self] savedURL in
-            defer { NSApp.setActivationPolicy(.accessory) }
+        trimmer.present(url: recordedURL, suggestedName: "Recording", date: date) { [weak self, weak trimmer] savedURL in
+            defer {
+                // Leave regular-app mode only once NO trimmer is still waiting —
+                // flipping while another one is open buries it (no Dock icon, not in
+                // ⌘-Tab), which is how an unsaved recording used to vanish.
+                if !TrimmerWindowController.hasPending {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
             guard let self else { return }
             guard let savedURL else { return } // discarded; nothing to notify
-            self.notifier.notifySaved(url: savedURL)
+            self.notifier.notifySaved(url: savedURL, autoSaved: trimmer?.wasAutoSaved ?? false)
         }
     }
 
@@ -1027,9 +1063,12 @@ final class RecordingNotifier: NSObject, UNUserNotificationCenterDelegate {
         center.add(request, withCompletionHandler: nil)
     }
 
-    func notifySaved(url: URL) {
+    /// `autoSaved` marks a recording the failsafe filed without the user pressing
+    /// Save (a new recording started, or it was stranded by a quit/crash) — the title
+    /// says so, since otherwise a save the user didn't make is a mystery.
+    func notifySaved(url: URL, autoSaved: Bool = false) {
         let content = UNMutableNotificationContent()
-        content.title = "Recording saved"
+        content.title = autoSaved ? "Unsaved recording saved automatically" : "Recording saved"
         // State WHERE it landed: subtitle carries the containing folder name so the
         // user knows the destination at a glance; body is the file name.
         content.subtitle = "in \(url.deletingLastPathComponent().lastPathComponent)"

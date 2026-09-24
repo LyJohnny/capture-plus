@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import AppKit
 
@@ -152,5 +153,40 @@ final class FileOrganizer {
     /// Reveals `url` in Finder, selecting it in its containing folder.
     func revealInFinder(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    // MARK: - Stranded-recording recovery
+
+    /// Recordings sitting in the in-progress folder. Called at launch — before any
+    /// recording can start — so every file listed belongs to a session that never
+    /// got a Save/Delete (the app quit, crashed, or the Mac lost power while it
+    /// waited). Snapshot synchronously; a new session's file is never included.
+    static func strandedRecordings(in directory: URL) -> [URL] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])) ?? []
+        return contents.filter { $0.pathExtension.lowercased() == "mp4" }
+    }
+
+    /// File stranded recordings into `directory`, named from each file's creation
+    /// date via the user's template. Only PLAYABLE files are moved — a session that
+    /// never captured anything is left where it is rather than filed as garbage —
+    /// and nothing is ever deleted. Returns the saved URLs.
+    func recoverRecordings(_ urls: [URL], into directory: URL, template: String) async -> [URL] {
+        var saved: [URL] = []
+        for url in urls {
+            let asset = AVURLAsset(url: url)
+            let playable = (try? await asset.load(.isPlayable)) ?? false
+            let seconds = ((try? await asset.load(.duration)) ?? .zero).seconds
+            guard playable, seconds > 0.5 else { continue }
+
+            let created = (try? url.resourceValues(forKeys: [.creationDateKey]))?
+                .creationDate ?? Date()
+            let name = fileName(template: template, date: created, ext: "mp4")
+            if let result = try? save(tempURL: url, directory: directory, fileName: name) {
+                saved.append(result)
+            }
+        }
+        return saved
     }
 }

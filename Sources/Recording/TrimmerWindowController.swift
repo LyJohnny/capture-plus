@@ -326,6 +326,56 @@ final class TrimmerWindowController: NSWindowController {
         finish(with: nil)
     }
 
+    // MARK: - Auto-save failsafe
+
+    /// True if this trimmer's result came from `autoSavePending` rather than the
+    /// user pressing Save — lets the caller explain why a recording got saved.
+    private(set) var wasAutoSaved = false
+
+    /// Whether any trimmer is still holding a recording awaiting Save/Delete.
+    static var hasPending: Bool { liveControllers.contains { !$0.didFinish } }
+
+    /// Test hook: where the window-close failsafe files recordings. nil (always, in
+    /// the shipping app) means the user's default save folder. Self-tests point it at
+    /// a temp folder so they can never write into the user's real recordings folder.
+    static var failsafeDirectoryOverride: URL?
+
+    /// Failsafe for a recording still waiting in a trimmer when the user moves on
+    /// (starts another recording). Without this, the next trimmer opens at the
+    /// exact same size and position — covering this one completely — and saving it
+    /// flips the app out of regular mode, burying this window for good. The user
+    /// experiences that as "my first recording got overwritten".
+    ///
+    /// Files the ORIGINAL, untrimmed recording into `directory` without prompting,
+    /// then closes the trimmer. Untrimmed on purpose: a failsafe must be instant and
+    /// must never block the new recording on an export — and it never discards
+    /// footage; the user can still trim or delete the saved file later.
+    ///
+    /// Trimmers the user is actively handling (exporting/saving, or a save/delete
+    /// sheet open) are left alone. Returns the URLs that were saved.
+    @discardableResult
+    static func autoSavePending(into directory: URL) -> [URL] {
+        liveControllers.filter { !$0.didFinish }.compactMap { $0.autoSaveUntouched(into: directory) }
+    }
+
+    private func autoSaveUntouched(into directory: URL) -> URL? {
+        guard !didFinish, !isExporting, window?.attachedSheet == nil,
+              let sourceURL, FileManager.default.fileExists(atPath: sourceURL.path)
+        else { return nil }
+
+        player?.pause()
+        let fileName = fileOrganizer.fileName(
+            template: settings.recordingFilenameTemplate, date: recordingDate, ext: "mp4")
+        // The directory-based save never overwrites: it picks "Name (2)" on collision.
+        guard let saved = try? fileOrganizer.save(
+            tempURL: sourceURL, directory: directory, fileName: fileName)
+        else { return nil }   // save failed → trimmer stays open, file stays where it was
+
+        wasAutoSaved = true
+        finish(with: saved)
+        return saved
+    }
+
     /// Debug-only (UITestHarness): reproduces the delete-while-playing flow and
     /// reports whether the player was fully detached — the audio-after-delete
     /// regression check. Plays, runs the discard path, then inspects teardown.
@@ -590,10 +640,16 @@ extension TrimmerWindowController: NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Safety net: if the window is torn down without a delivered result,
-        // treat it as a discard so the raw temp file isn't leaked.
-        if !didFinish {
-            discardAndFinish()
+        // The window is being torn down without the user choosing Save or Delete —
+        // most commonly because the APP IS QUITTING (restart, shutdown, Quit menu).
+        // This used to be treated as Delete and silently destroyed the recording.
+        // Never again: file it exactly like the new-recording failsafe does, and if
+        // even that can't run (a sheet is up, an export is mid-flight), leave the file
+        // where it is — the next launch's stranded-recording sweep will file it.
+        guard !didFinish else { return }
+        let directory = Self.failsafeDirectoryOverride ?? settings.saveDirectoryURL
+        if autoSaveUntouched(into: directory) == nil {
+            finish(with: nil)   // delivers "no result" WITHOUT deleting the file
         }
     }
 }

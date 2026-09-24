@@ -26,6 +26,7 @@ enum UITestHarness {
         case "micidtest": runMicResolutionTest()
         case "scrolltest": runScrollReverseTest()
         case "autostoptest": runAutoStopTest()
+        case "pendingsavetest": runPendingSaveTest()
         case "settingsrender": renderSettings()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
@@ -124,6 +125,148 @@ enum UITestHarness {
                 report("recording=FAIL (\(error.localizedDescription))\n")
                 exit(1)
             }
+        }
+    }
+
+    /// The "second recording buried the first" failsafe, end to end, with a REAL
+    /// recording and TEMP folders only (never the user's real save folder):
+    ///  A. pending trimmer + auto-save → saved, playable, source moved, trimmer done,
+    ///     flagged auto; a same-named decoy in the destination is NOT overwritten
+    ///  B. idempotent: a second auto-save call is a no-op
+    ///  C. a trimmer with a sheet open (user mid-save/delete) is left alone, then
+    ///     saved once the sheet is dismissed
+    ///  D. launch sweep: stranded playable file filed; 0-byte file and non-mp4 left
+    ///     untouched (never deleted); a second sweep files nothing new
+    private static func runPendingSaveTest() {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("captureplus-pending-\(UUID().uuidString)")
+        let inProgress = root.appendingPathComponent("In Progress")
+        let saveDir = root.appendingPathComponent("Saved")
+        try? fm.createDirectory(at: inProgress, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: saveDir, withIntermediateDirectories: true)
+
+        var lines: [String] = []
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            lines.append("\(name)=\(ok ? "PASS" : "FAIL")\(detail.isEmpty ? "" : " (\(detail))")")
+        }
+        func finishTest() {
+            let ok = lines.allSatisfy { $0.contains("=PASS") }
+            try? ("pendingSave=\(ok ? "PASS" : "FAIL")\n" + lines.joined(separator: "\n") + "\n")
+                .write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+            try? fm.removeItem(at: root)
+            exit(ok ? 0 : 1)
+        }
+        func playable(_ url: URL) async -> Bool {
+            let asset = AVURLAsset(url: url)
+            let p = (try? await asset.load(.isPlayable)) ?? false
+            let s = ((try? await asset.load(.duration)) ?? .zero).seconds
+            return p && s > 1
+        }
+
+        Task { @MainActor in
+            // A real 4s recording to play with.
+            let clip = inProgress.appendingPathComponent("clip.mp4")
+            let engine = RecordingEngine()
+            do {
+                guard let display = try await engine.availableDisplays().first else {
+                    check("record", false, "no display"); finishTest(); return
+                }
+                try await engine.startRecording(
+                    target: .display(display), captureSystemAudio: true,
+                    includeMicrophone: false, microphoneDeviceID: nil,
+                    maxHeight: 720, outputURLs: [clip])
+                try await Task.sleep(nanoseconds: 4_000_000_000)
+                _ = try await engine.stopRecording()
+            } catch {
+                check("record", false, error.localizedDescription); finishTest(); return
+            }
+            let clip2 = inProgress.appendingPathComponent("clip2.mp4")
+            let clip3 = inProgress.appendingPathComponent("stranded.mp4")
+            let clip4 = root.appendingPathComponent("quit-clip.mp4")   // outside In Progress
+            try? fm.copyItem(at: clip, to: clip2)
+            try? fm.copyItem(at: clip, to: clip3)
+            try? fm.copyItem(at: clip, to: clip4)
+            TrimmerWindowController.failsafeDirectoryOverride = saveDir
+
+            // ---- A: pending trimmer auto-saved, decoy not overwritten ----
+            let fixedDate = Date(timeIntervalSince1970: 1_790_000_000)
+            let expectedName = FileOrganizer().fileName(
+                template: AppSettings.shared.recordingFilenameTemplate, date: fixedDate, ext: "mp4")
+            let decoy = saveDir.appendingPathComponent(expectedName)
+            try? Data("DECOY".utf8).write(to: decoy)
+
+            var delivered: URL??
+            let t1 = TrimmerWindowController()
+            t1.present(url: clip, suggestedName: "T1", date: fixedDate) { delivered = .some($0) }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            check("pendingBefore", TrimmerWindowController.hasPending)
+
+            let saved = TrimmerWindowController.autoSavePending(into: saveDir)
+            let savedURL = saved.first
+            check("savedOne", saved.count == 1, "\(saved.count)")
+            check("sourceMoved", !fm.fileExists(atPath: clip.path))
+            check("playable", savedURL != nil ? await playable(savedURL!) : false)
+            check("flaggedAuto", t1.wasAutoSaved)
+            check("completionGotURL", delivered == .some(savedURL))
+            let decoyIntact = (try? String(contentsOf: decoy, encoding: .utf8)) == "DECOY"
+            check("decoyNotOverwritten", decoyIntact && savedURL != decoy,
+                  savedURL?.lastPathComponent ?? "nil")
+
+            // ---- B: idempotent ----
+            check("secondCallNoop", TrimmerWindowController.autoSavePending(into: saveDir).isEmpty)
+            check("noPendingAfter", !TrimmerWindowController.hasPending)
+
+            // ---- C: trimmer with a sheet open is left alone ----
+            let t2 = TrimmerWindowController()
+            t2.present(url: clip2, suggestedName: "T2", date: fixedDate.addingTimeInterval(60)) { _ in }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                                 styleMask: [.titled], backing: .buffered, defer: false)
+            t2.window?.beginSheet(sheet, completionHandler: nil)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let skipped = TrimmerWindowController.autoSavePending(into: saveDir)
+            check("sheetOpenSkipped", skipped.isEmpty && fm.fileExists(atPath: clip2.path))
+            t2.window?.endSheet(sheet)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let afterSheet = TrimmerWindowController.autoSavePending(into: saveDir)
+            check("savedAfterSheet", afterSheet.count == 1 && !fm.fileExists(atPath: clip2.path))
+
+            // ---- E: window torn down without a choice (the APP-QUIT path) ----
+            // This exact path deleted a real 14-minute recording on 2026-09-24.
+            let t3 = TrimmerWindowController()
+            t3.present(url: clip4, suggestedName: "T3", date: fixedDate.addingTimeInterval(120)) { _ in }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            let before = Set((try? fm.contentsOfDirectory(atPath: saveDir.path)) ?? [])
+            t3.window?.close()   // what app termination does to open windows
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let after = Set((try? fm.contentsOfDirectory(atPath: saveDir.path)) ?? [])
+            let newFile = after.subtracting(before).first.map { saveDir.appendingPathComponent($0) }
+            check("quitCloseNotDeleted", newFile != nil && !fm.fileExists(atPath: clip4.path),
+                  newFile?.lastPathComponent ?? "file vanished")
+            check("quitCloseSavedPlayable", newFile != nil ? await playable(newFile!) : false)
+            check("quitCloseFlaggedAuto", t3.wasAutoSaved)
+
+            // ---- D: launch sweep of stranded recordings ----
+            let empty = inProgress.appendingPathComponent("empty.mp4")
+            let notes = inProgress.appendingPathComponent("notes.txt")
+            fm.createFile(atPath: empty.path, contents: Data())
+            try? Data("x".utf8).write(to: notes)
+
+            let organizer = FileOrganizer()
+            let template = AppSettings.shared.recordingFilenameTemplate
+            let listed = FileOrganizer.strandedRecordings(in: inProgress)
+            check("listsOnlyMp4", Set(listed.map(\.lastPathComponent)) == ["stranded.mp4", "empty.mp4"],
+                  listed.map(\.lastPathComponent).sorted().joined(separator: ","))
+            let recovered = await organizer.recoverRecordings(listed, into: saveDir, template: template)
+            check("recoveredPlayable", recovered.count == 1 && !fm.fileExists(atPath: clip3.path),
+                  "\(recovered.count)")
+            check("emptyLeftNotDeleted", fm.fileExists(atPath: empty.path))
+            check("nonMp4Untouched", fm.fileExists(atPath: notes.path))
+            let again = await organizer.recoverRecordings(
+                FileOrganizer.strandedRecordings(in: inProgress), into: saveDir, template: template)
+            check("sweepIdempotent", again.isEmpty)
+
+            finishTest()
         }
     }
 

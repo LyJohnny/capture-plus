@@ -61,8 +61,11 @@ Requires macOS 15+ and Xcode 16+.
 # 1. Install the project generator
 brew install xcodegen
 
-# 2. Create the local self-signed signing certificate (once per machine).
+# 2. Set up the self-signed signing certificate (once per machine).
 #    This gives the app a stable identity so macOS remembers its permissions.
+#    The certificate is shared between your Macs through iCloud Drive
+#    ("Capture Plus/capture-plus-signing.p12"), so a DMG built on one Mac
+#    installs on another without re-granting permissions.
 ./scripts/setup-signing.sh
 
 # 3. Build, sign, and install to /Applications

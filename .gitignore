@@ -16,3 +16,7 @@ xcuserdata/
 
 # Packaged disk images (distribute via GitHub Releases, not the repo)
 dist/
+
+# Signing key backups (shared via iCloud Drive only; never commit)
+*.p12
+*.keychain-db

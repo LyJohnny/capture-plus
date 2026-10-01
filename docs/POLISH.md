@@ -37,5 +37,13 @@ Recording-quality depth, inspired by BetterCapture. Not started:
 - Apple's native content picker (`SCContentSharingPicker`) for window/display selection.
 - Content exclusion (hide menu bar / dock / wallpaper from a recording).
 - Codec + frame-rate options (H.264 for universal sharing; 30/60 fps).
+- **Smaller recordings** (noted 2026-10-01). Recordings are HEVC at a *fixed* bitrate
+  (`RecordingWriter.swift` `makeVideoInput`: 0.05 bits/pixel/frame) at 60 fps
+  (`RecordingEngine.swift`), so a 3456×2234 Retina screen ≈ 23 Mbps ≈ 10 GB/hour, even
+  for a static page of text. For comparison, re-encoding 30-min work screen recordings
+  with ffmpeg (`libx264 -preset veryfast -crf 26 -tune stillimage`, full res) gave
+  ≈ 0.5 GB/hour with no visible text loss. Ideas: quality-based rate
+  (`kVTCompressionPropertyKey_Quality` / `AVVideoQualityKey`) instead of a fixed
+  bitrate; 30 fps default for screen content; optional "compress after recording" pass.
 - (Bigger) persist clipboard history to disk (SQLite, Maccy-style) — survives restarts,
   near-zero RAM; changes the privacy posture (history touches disk).

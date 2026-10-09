@@ -33,6 +33,8 @@ targets:
       path: Resources/CapturePlus.entitlements
       properties:
         com.apple.security.app-sandbox: false
+        # Hardened runtime (required for notarization) blocks mic access without this.
+        com.apple.security.device.audio-input: true
     settings:
       base:
         PRODUCT_NAME: "Capture +"
@@ -40,12 +42,16 @@ targets:
         MARKETING_VERSION: "0.6.0"
         CURRENT_PROJECT_VERSION: "7"
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "Capture Plus Self-Signed"
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        DEVELOPMENT_TEAM: BDU36H5583
         CODE_SIGNING_REQUIRED: "YES"
         CODE_SIGNING_ALLOWED: "YES"
         PROVISIONING_PROFILE_SPECIFIER: ""
-        OTHER_CODE_SIGN_FLAGS: "--keychain /Users/joh/Library/Keychains/capture-plus-signing.keychain-db --timestamp=none"
-        ENABLE_HARDENED_RUNTIME: false
+        OTHER_CODE_SIGN_FLAGS: "--timestamp"
+        ENABLE_HARDENED_RUNTIME: true
+        # Xcode otherwise injects get-task-allow (debugger attach), which Apple's
+        # notary service rejects.
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: false
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEAD_CODE_STRIPPING: true

@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
 #
-# Build Capture + (Release, signed with the local self-signed cert) and install it
-# to /Applications. This is the normal way to (re)build the app.
+# Build Capture + (Release, signed with the Developer ID certificate, hardened
+# runtime on) and install it to /Applications. This is the normal way to
+# (re)build the app.
 #
-# First time on a new Mac: run `scripts/setup-signing.sh` once, then this.
+# First time on a new Mac: Xcode → Settings → Accounts → Manage Certificates
+# must show "Developer ID Application" (import it from the Mac that created it),
+# then run this.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Signing cert is still named "Capture Plus Self-Signed" (renaming it would reset the granted
-# Screen Recording / Mic permissions, which are keyed to it + the bundle id).
-CN="Capture Plus Self-Signed"
-KC="$HOME/Library/Keychains/capture-plus-signing.keychain-db"
-KCPASS="capture-plus-local"
+CN="Developer ID Application"
 APP_NAME="Capture +"
 
 command -v xcodegen >/dev/null || { echo "✗ xcodegen not found — run: brew install xcodegen"; exit 1; }
-security find-identity -p codesigning "$KC" 2>/dev/null | grep -q "$CN" \
-  || { echo "✗ No signing identity — run scripts/setup-signing.sh first"; exit 1; }
+security find-identity -v -p codesigning 2>/dev/null | grep -q "$CN" \
+  || { echo "✗ No '$CN' certificate in the keychain — add it in Xcode → Settings → Accounts → Manage Certificates"; exit 1; }
 
-security unlock-keychain -p "$KCPASS" "$KC"
 xcodegen generate
 
 echo "▶ Building (Release, signed)…"

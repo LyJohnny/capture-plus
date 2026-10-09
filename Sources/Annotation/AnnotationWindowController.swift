@@ -179,6 +179,9 @@ final class AnnotationWindowController: NSWindowController {
 
     /// Debug / render-harness only.
     func debugPopulateShapes() { canvas?.debugPopulateShapes() }
+    func debugPopulateSample(arrowFrom: CGPoint, arrowTo: CGPoint, caption: String, at: CGPoint) {
+        canvas?.debugPopulateSample(arrowFrom: arrowFrom, arrowTo: arrowTo, caption: caption, at: at)
+    }
     func debugTextCommitSelfTest() -> String { canvas?.debugTextCommitSelfTest() ?? "no canvas" }
 
     // MARK: - Window sizing

@@ -1,56 +1,60 @@
 <div align="center">
 
-<img src="docs/icon.png" width="128" alt="Capture + icon" />
+<img src="docs/icon.png" width="112" alt="Capture + icon" />
 
 # Capture +
 
-**A menu-bar screen-capture utility for macOS — record, snip, annotate, and keep a short-lived clipboard history.**
+**Record your screen, snip screenshots, mark them up, and keep a short clipboard history. All from the Mac menu bar.**
 
-Screenshots copy straight to your clipboard instead of littering your desktop. Recordings capture system audio + your mic. Everything stays local — no accounts, no tracking.
+Screenshots go straight to your clipboard instead of your desktop. Recordings capture system audio and, if you want, your mic. Everything stays on your Mac.
 
-![macOS](https://img.shields.io/badge/macOS-15%2B-black?logo=apple) ![Swift](https://img.shields.io/badge/Swift-AppKit%20%2B%20SwiftUI-orange?logo=swift) ![License](https://img.shields.io/badge/license-MIT-blue)
+[![Download for macOS](https://img.shields.io/github/v/release/LyJohnny/capture-plus?label=Download%20for%20macOS&style=for-the-badge&logo=apple&logoColor=white&color=1d1d1f)](../../releases/latest)
+
+macOS 15 or later · Apple silicon · Free and open source
+
+<br />
+
+<img src="docs/screenshots/annotation.png" width="900" alt="The annotation editor marking up a screenshot" />
 
 </div>
 
----
+## See it in action
 
-## Features
-
-- 🎥 **Screen recording** — record a display, a specific window, or all displays, with **system audio + optional microphone**. A countdown overlay, a cancel confirmation, and a quick **trim-on-finish** step before it saves. Remembers your save folder and names files by date/time.
-- ✂️ **Region screenshots that copy to the clipboard** — drag a region and it lands on your clipboard instantly. **Nothing is written to disk** unless you explicitly Save (or turn on "keep captured screenshots"). A corner thumbnail lets you jump straight into annotation.
-- 🖊️ **Annotation editor with Apple-Markup parity** — select, pen, highlighter, a Shapes menu (line, arrow, rectangle, rounded rectangle, oval, speech bubble, star, hexagon), text with font/size/style, color + fill + thickness, undo/redo, crop, then **Copy** or **Save**.
-- 📋 **Clipboard history** — a short-lived history (default **5 hours**, adjustable 1–24h) with thumbnails, date/time titles, **All / Text / Images** tabs, per-item delete, and Clear All. Click any item to re-copy it, with a confirmation pill.
-- 🍎 **Lives in the menu bar** — no Dock icon, optional launch-at-login, and it deliberately avoids the system screenshot shortcuts.
-- 🔒 **Local & private** — no analytics, no account. Your captures never leave your Mac. The only network use is a daily check for updates (Sparkle); **Check for Updates…** in the menu does it on demand.
-
-## Screenshots
-
-| Annotation editor | Clipboard history |
+| Clipboard history | Settings |
 |---|---|
-| ![Annotation editor](docs/screenshots/annotation.png) | ![Clipboard history](docs/screenshots/clipboard.png) |
+| ![Clipboard history](docs/screenshots/clipboard.png) | ![Settings](docs/screenshots/settings.png) |
+
+## What it does
+
+- **Screen recording.** Record a display, a single window, or every display at once, with system audio and an optional microphone. A short countdown, then a quick trim step before it saves. Files are named by date and time in the folder you choose.
+- **Screenshots that land on the clipboard.** Drag a region and it is on your clipboard instantly. Nothing is written to disk unless you choose Save. A corner thumbnail takes you straight into the editor.
+- **Annotation editor.** Pen, highlighter, arrows and shapes, text with font and style controls, color, fill and thickness, undo and redo, crop. Then Copy or Save.
+- **Clipboard history.** Everything you copy, kept for five hours by default (adjustable from one hour to a day), with thumbnails, All / Text / Images tabs, and one-click re-copy.
+- **Lives in the menu bar.** No Dock icon, optional launch at login, and shortcuts that stay out of the way of the system screenshot keys.
+- **Private by design.** No analytics, no account. The only network use is a daily check for updates; **Check for Updates…** in the menu runs it on demand.
 
 ## Keyboard shortcuts
 
-All three are rebindable in **Settings → Shortcuts**. Defaults avoid the macOS system screenshot bindings (⌘⇧3/4/5):
+All three can be changed in **Settings → Shortcuts**. The defaults avoid the macOS screenshot bindings (⌘⇧3, ⌘⇧4, ⌘⇧5):
 
 | Action | Default |
 |---|---|
-| Start / stop recording | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>1</kbd> |
-| Region screenshot → clipboard | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>2</kbd> |
+| Start or stop recording | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>1</kbd> |
+| Screenshot a region to the clipboard | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>2</kbd> |
 | Show clipboard history | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>V</kbd> |
 
 ## Install
 
-1. Download **`Capture-Plus.dmg`** from the [latest release](../../releases/latest).
+1. Download **Capture-Plus.dmg** from the [latest release](../../releases/latest).
 2. Open it and drag **Capture +** into **Applications**.
-3. Double-click **Capture +** in Applications. (It's signed and notarized with Apple, so there's no "unidentified developer" warning.)
+3. Open Capture + from Applications. It is signed and notarized by Apple, so there is no warning to click through.
+4. The first time you take a screenshot or recording, macOS asks for **Screen Recording** permission. Allow it; that is what lets Capture + see your screen. **Microphone** is only requested if you turn on mic recording.
 
-> [!NOTE]
-> On first use macOS will ask you to grant **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). This is required to record and to capture screenshots. **Microphone** is only requested if you enable mic recording.
+Updates arrive inside the app: it checks once a day and offers new versions, or use **Check for Updates…** in the menu.
 
 ## Build from source
 
-Requires macOS 15+ and Xcode 16+.
+Requires macOS 15 or later and Xcode 16 or later.
 
 ```bash
 # 1. Install the project generator
@@ -67,26 +71,30 @@ brew install xcodegen
 # 4. (Optional) Package a notarized disk image → dist/Capture-Plus.dmg
 #    (needs the "capture-plus-notary" notarytool keychain profile, see the script)
 ./scripts/make-dmg.sh
+
+# 5. (Maintainer) Cut a release: version bump, build, notarize, GitHub release, update feed
+./scripts/release.sh 0.7.1 "Title" "Release notes"
 ```
 
-`.xcodeproj` is generated by XcodeGen from [`project.yml`](project.yml) and is not checked in — run `xcodegen generate` (or `build.sh`) after cloning.
+`.xcodeproj` is generated by XcodeGen from [`project.yml`](project.yml) and is not checked in. Run `xcodegen generate` (or `build.sh`) after cloning.
 
 ## How it's built
 
 | Area | Tech |
 |---|---|
-| UI | AppKit + SwiftUI (hybrid), menu-bar `LSUIElement` app |
-| Recording | [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) (`SCStream` + `SCRecordingOutput`), HEVC |
+| UI | AppKit + SwiftUI, menu-bar (`LSUIElement`) app |
+| Recording | [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) `SCStream` into our own `AVAssetWriter`, HEVC, fragmented so a crash never loses the whole file |
 | Trimming | AVFoundation / `AVPlayerView` |
-| Clipboard | `NSPasteboard` change-count polling, with concealed/transient types skipped |
+| Clipboard | `NSPasteboard` change-count polling; concealed and transient types are skipped |
 | Global shortcuts | [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) by Sindre Sorhus |
+| Updates | [Sparkle](https://sparkle-project.org) |
 
-## A note on signing & distribution
+## Signing and distribution
 
-Releases are signed with an Apple **Developer ID** certificate and **notarized**, so macOS opens them with a double-click and remembers the app's permissions across updates. Updates are delivered in-app with [Sparkle](https://sparkle-project.org) from the `appcast.xml` in this repo, pointing at the DMG attached to each GitHub release.
+Releases are signed with an Apple Developer ID certificate and notarized, so macOS opens them with a double-click and keeps the app's permissions across updates. Updates are delivered in-app with Sparkle from the `appcast.xml` in this repo, pointing at the DMG attached to each GitHub release.
 
 ## License
 
 [MIT](LICENSE) © 2026 Johnny Ly. Third-party notices in [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
 
-*A personal utility, shared in case it's useful. Not affiliated with any similarly-named app.*
+*A personal utility, shared in case it's useful. Not affiliated with any similarly named app.*

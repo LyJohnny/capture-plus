@@ -89,6 +89,9 @@ struct ClipboardHistoryView: View {
         .frame(minWidth: 320, minHeight: 300)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // Extend under the transparent title bar so the traffic lights sit on the
+        // panel instead of floating above it (the header's top padding makes room).
+        .ignoresSafeArea(edges: .top)
         .overlay(alignment: .bottom) { copiedBannerView }
         // Key handling lives on the whole view so it works before any row is focused.
         .focusable()

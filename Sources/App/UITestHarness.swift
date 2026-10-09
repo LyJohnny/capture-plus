@@ -29,6 +29,7 @@ enum UITestHarness {
         case "autostoptest": runAutoStopTest()
         case "pendingsavetest": runPendingSaveTest()
         case "updatetest": runUpdateTest()
+        case "shots": renderProductShots()
         case "settingsrender": renderSettings()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
@@ -867,6 +868,139 @@ enum UITestHarness {
                                       withAttributes: attrs)
         img.unlockFocus()
         return img
+    }
+
+    // MARK: - Product shots (README / release page)
+
+    /// Captures each window with its real macOS chrome and shadow (needs Screen
+    /// Recording, so launch via `open`), composited onto the Sonoma wallpaper.
+    /// Output: /tmp/captureplus-shot-{annotation,clipboard,settings}.png
+    private static var shotKeepAlive: [AnyObject] = []
+    private static func renderProductShots() {
+        Task { @MainActor in
+            // A believable "screenshot" to annotate: the Settings window, shortened.
+            let sampleSettings = SettingsWindowController()
+            sampleSettings.show()
+            sampleSettings.window?.setContentSize(NSSize(width: 460, height: 490))   // ends after App Permissions
+            sampleSettings.window?.center()
+            sampleSettings.window?.makeFirstResponder(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            sampleSettings.window?.makeKeyAndOrderFront(nil)
+            shotKeepAlive.append(sampleSettings)
+            try? await Task.sleep(for: .seconds(1.2))
+            guard let sampleCG = await capture(sampleSettings.window, margin: 0, shadow: false) else { exit(1) }
+            let sampleScale = sampleSettings.window?.backingScaleFactor ?? 2
+            let sample = NSImage(cgImage: sampleCG, size: NSSize(width: CGFloat(sampleCG.width) / sampleScale,
+                                                                 height: CGFloat(sampleCG.height) / sampleScale))
+            sampleSettings.window?.orderOut(nil)
+
+            // 1. Annotation editor with a real-looking markup on top of that screenshot.
+            let annotation = AnnotationWindowController()
+            annotation.present(image: sample, suggestedName: "Screenshot",
+                               defaultSaveDirectory: nil,
+                               onCopy: { _ in }, onSave: { _, _ in }, onDelete: {})
+            let w = CGFloat(sampleCG.width), h = CGFloat(sampleCG.height)
+            annotation.debugPopulateSample(arrowFrom: CGPoint(x: w * 0.73, y: h * 0.37),
+                                           arrowTo: CGPoint(x: w * 0.84, y: h * 0.245),
+                                           caption: "Click Grant", at: CGPoint(x: w * 0.44, y: h * 0.385))
+            shotKeepAlive.append(annotation)
+            try? await Task.sleep(for: .seconds(1))
+            await shoot(annotation.window, name: "annotation")
+            annotation.window?.orderOut(nil)
+
+            // 2. Clipboard history panel, styled like the live one.
+            let model = ClipboardHistoryModel()
+            var items: [ClipItem] = []
+            if let shot = ClipItem.image(from: sample) { items.append(shot) }
+            items.append(ClipItem(kind: .text("Meeting moved to Thursday, 3:00 PM")))
+            items.append(ClipItem(kind: .text("https://github.com/LyJohnny/capture-plus")))
+            model.items = items
+            let panel = ClipboardHistoryPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 360, height: 460),
+                styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.contentView = NSHostingView(rootView: ClipboardHistoryView(model: model))
+            panel.center()
+            panel.makeKeyAndOrderFront(nil)
+            shotKeepAlive.append(panel)
+            try? await Task.sleep(for: .seconds(1))
+            await shoot(panel, name: "clipboard")
+            panel.orderOut(nil)
+
+            // 3. Settings, the real window, cut at a row boundary (it scrolls further).
+            let settings = SettingsWindowController()
+            settings.show()
+            settings.window?.setContentSize(NSSize(width: 460, height: 905))
+            settings.window?.center()
+            settings.window?.makeFirstResponder(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            settings.window?.makeKeyAndOrderFront(nil)
+            shotKeepAlive.append(settings)
+            try? await Task.sleep(for: .seconds(1.2))
+            await shoot(settings.window, name: "settings")
+            exit(0)
+        }
+    }
+
+    /// Screenshots `window` via ScreenCaptureKit: its real chrome, optionally its
+    /// shadow (with `margin` points of room around it), transparent elsewhere.
+    private static func capture(_ window: NSWindow?, margin: CGFloat, shadow: Bool) async -> CGImage? {
+        guard let window,
+              let content = try? await SCShareableContent.current,
+              let scWindow = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }),
+              let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
+        else { return nil }
+        let scale = CGFloat(window.backingScaleFactor)
+        // SCK rects are top-left origin in display points; AppKit's are bottom-left.
+        let frame = window.frame
+        let src = CGRect(x: frame.minX - margin,
+                         y: display.frame.height - frame.maxY - margin,
+                         width: frame.width + margin * 2, height: frame.height + margin * 2)
+        let filter = SCContentFilter(display: display, including: [scWindow])
+        let config = SCStreamConfiguration()
+        config.sourceRect = src
+        config.width = Int(src.width * scale)
+        config.height = Int(src.height * scale)
+        config.showsCursor = false
+        config.backgroundColor = .clear
+        config.ignoreShadowsDisplay = !shadow
+        config.captureResolution = .best
+        return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    }
+
+    /// Captures `window` with its shadow and composites it onto the wallpaper.
+    private static func shoot(_ window: NSWindow?, name: String) async {
+        guard let cg = await capture(window, margin: 80, shadow: true) else {
+            try? "shot=\(name) FAIL\n".write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+            return
+        }
+        let canvasW = 2400, canvasH = 1500
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: canvasW, pixelsHigh: canvasH,
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.imageInterpolation = .high
+        let canvas = NSRect(x: 0, y: 0, width: canvasW, height: canvasH)
+        if let wall = NSImage(contentsOfFile: "/System/Library/Desktop Pictures/Sonoma.heic") {
+            let ws = wall.size
+            let f = max(canvas.width / ws.width, canvas.height / ws.height)
+            let dw = ws.width * f, dh = ws.height * f
+            wall.draw(in: NSRect(x: (canvas.width - dw) / 2, y: (canvas.height - dh) / 2, width: dw, height: dh))
+        }
+        var w = CGFloat(cg.width), h = CGFloat(cg.height)
+        let f = min(1, canvas.width * 0.92 / w, canvas.height * 0.92 / h)
+        w *= f; h *= f
+        NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            .draw(in: NSRect(x: (canvas.width - w) / 2, y: (canvas.height - h) / 2, width: w, height: h))
+        NSGraphicsContext.restoreGraphicsState()
+        try? rep.representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: "/tmp/captureplus-shot-\(name).png"))
     }
 
     private static func writePNG(_ view: NSView, to path: String) {

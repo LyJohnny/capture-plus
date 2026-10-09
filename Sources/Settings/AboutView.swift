@@ -50,7 +50,7 @@ struct AboutView: View {
                 }
             }
 
-            Text("Personal utility — not for distribution.")
+            Text("Free and open source. MIT license.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

@@ -23,7 +23,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Personal utility. Not for distribution.</string>
+	<string>Free and open source. MIT license.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Capture + records your microphone when you enable it for a screen recording.</string>
 	<key>SUEnableAutomaticChecks</key>

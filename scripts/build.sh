@@ -27,7 +27,19 @@ APP=$(find "$HOME/Library/Developer/Xcode/DerivedData/CapturePlus-"*/Build/Produ
   -maxdepth 1 -name "$APP_NAME.app" 2>/dev/null | head -1)
 [ -n "${APP:-}" ] || { echo "✗ Build product not found"; exit 1; }
 
-codesign --verify --deep "$APP" && echo "✓ signature valid"
+# Xcode re-signs Sparkle.framework itself but not the helpers nested inside it
+# (Updater.app, Autoupdate, the XPC services), which keep Sparkle's own
+# signature — Apple's notary service rejects those. Re-sign inside-out with our
+# Developer ID, then the app so its seal covers the new signatures.
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+if [ -d "$SPARKLE" ]; then
+  for nested in "$SPARKLE"/XPCServices/*.xpc "$SPARKLE/Autoupdate" "$SPARKLE/Updater.app" "$APP/Contents/Frameworks/Sparkle.framework"; do
+    codesign -f -s "$CN" -o runtime --timestamp --preserve-metadata=entitlements "$nested" 2>/dev/null
+  done
+  codesign -f -s "$CN" -o runtime --timestamp --entitlements Resources/CapturePlus.entitlements "$APP" 2>/dev/null
+fi
+
+codesign --verify --deep --strict "$APP" && echo "✓ signature valid"
 
 DEST="/Applications/$APP_NAME.app"
 [ -w /Applications ] || { mkdir -p "$HOME/Applications"; DEST="$HOME/Applications/$APP_NAME.app"; }

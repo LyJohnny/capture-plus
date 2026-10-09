@@ -873,7 +873,7 @@ enum UITestHarness {
     // MARK: - Product shots (README / release page)
 
     /// Captures each window with its real macOS chrome and shadow (needs Screen
-    /// Recording, so launch via `open`), composited onto the Sonoma wallpaper.
+    /// Recording, so launch via `open`), composited onto the Tahoe wallpaper.
     /// Output: /tmp/captureplus-shot-{annotation,clipboard,settings}.png
     private static var shotKeepAlive: [AnyObject] = []
     private static func renderProductShots() {
@@ -983,7 +983,10 @@ enum UITestHarness {
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
         NSGraphicsContext.current?.imageInterpolation = .high
         let canvas = NSRect(x: 0, y: 0, width: canvasW, height: canvasH)
-        if let wall = NSImage(contentsOfFile: "/System/Library/Desktop Pictures/Sonoma.heic") {
+        // macOS 26's default wallpaper (Tahoe Light). It ships inside the wallpaper
+        // extension rather than Desktop Pictures.
+        let wallpaper = "/System/Library/ExtensionKit/Extensions/NeptuneOneWallpaper.appex/Contents/Resources/TahoeLight.heic"
+        if let wall = NSImage(contentsOfFile: wallpaper) {
             let ws = wall.size
             let f = max(canvas.width / ws.width, canvas.height / ws.height)
             let dw = ws.width * f, dh = ws.height * f

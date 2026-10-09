@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import ScreenCaptureKit
+import Sparkle
 import UniformTypeIdentifiers
 import UserNotifications
 
@@ -31,6 +32,10 @@ final class MenuBarController: NSObject {
     private let scrollReverser = ScrollReverser()
 
     private lazy var settingsWindow = SettingsWindowController()
+    /// Sparkle: checks for a new release once a day and on demand from the menu.
+    private let updater = SPUStandardUpdaterController(startingUpdater: true,
+                                                       updaterDelegate: nil,
+                                                       userDriverDelegate: nil)
     private lazy var onboarding = OnboardingWindowController()
 
     // MARK: - Recording session state
@@ -192,6 +197,10 @@ final class MenuBarController: NSObject {
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(openSettingsMenu(_:)),
                           symbol: "gearshape", key: ",", modifiers: .command))
+        let update = item("Check for Updates…", #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                          symbol: "arrow.down.circle")
+        update.target = updater
+        menu.addItem(update)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Capture +",

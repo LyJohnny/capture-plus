@@ -21,7 +21,7 @@ Screenshots copy straight to your clipboard instead of littering your desktop. R
 - 🖊️ **Annotation editor with Apple-Markup parity** — select, pen, highlighter, a Shapes menu (line, arrow, rectangle, rounded rectangle, oval, speech bubble, star, hexagon), text with font/size/style, color + fill + thickness, undo/redo, crop, then **Copy** or **Save**.
 - 📋 **Clipboard history** — a short-lived history (default **5 hours**, adjustable 1–24h) with thumbnails, date/time titles, **All / Text / Images** tabs, per-item delete, and Clear All. Click any item to re-copy it, with a confirmation pill.
 - 🍎 **Lives in the menu bar** — no Dock icon, optional launch-at-login, and it deliberately avoids the system screenshot shortcuts.
-- 🔒 **Local & private** — no network calls, no analytics, no account. Your captures never leave your Mac.
+- 🔒 **Local & private** — no analytics, no account. Your captures never leave your Mac. The only network use is a daily check for updates (Sparkle); **Check for Updates…** in the menu does it on demand.
 
 ## Screenshots
 
@@ -43,12 +43,7 @@ All three are rebindable in **Settings → Shortcuts**. Defaults avoid the macOS
 
 1. Download **`Capture-Plus.dmg`** from the [latest release](../../releases/latest).
 2. Open it and drag **Capture +** into **Applications**.
-3. **First launch only** (self-signed, not notarized, so macOS asks you to approve it once):
-   1. Double-click **Capture +** — macOS says it "could not verify" it → click **Done** (**not** "Move to Trash").
-   2. Open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to "Capture +.app was blocked".
-   3. Confirm with Touch ID / password → **Open**. It launches normally after that.
-
-   > On macOS 15 (Sequoia) / 26 (Tahoe) the old right-click → Open shortcut no longer works — the Privacy & Security → **Open Anyway** path above is the way. The DMG also includes a **"How to Open Capture +.txt"** with these steps.
+3. Double-click **Capture +** in Applications. (It's signed and notarized with Apple, so there's no "unidentified developer" warning.)
 
 > [!NOTE]
 > On first use macOS will ask you to grant **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). This is required to record and to capture screenshots. **Microphone** is only requested if you enable mic recording.
@@ -61,17 +56,16 @@ Requires macOS 15+ and Xcode 16+.
 # 1. Install the project generator
 brew install xcodegen
 
-# 2. Set up the self-signed signing certificate (once per machine).
-#    This gives the app a stable identity so macOS remembers its permissions.
-#    The certificate is shared between your Macs through iCloud Drive
-#    ("Capture Plus/capture-plus-signing.p12"), so a DMG built on one Mac
-#    installs on another without re-granting permissions.
-./scripts/setup-signing.sh
+# 2. Signing: the project expects a "Developer ID Application" certificate in
+#    your keychain (Xcode → Settings → Accounts → Manage Certificates). Without
+#    an Apple Developer account, change CODE_SIGN_IDENTITY in project.yml to "-"
+#    (ad-hoc) for a local build.
 
 # 3. Build, sign, and install to /Applications
 ./scripts/build.sh
 
-# 4. (Optional) Package a shareable disk image → dist/Capture-Plus.dmg
+# 4. (Optional) Package a notarized disk image → dist/Capture-Plus.dmg
+#    (needs the "capture-plus-notary" notarytool keychain profile, see the script)
 ./scripts/make-dmg.sh
 ```
 
@@ -89,7 +83,7 @@ brew install xcodegen
 
 ## A note on signing & distribution
 
-The app uses a **local self-signed certificate** rather than an Apple Developer ID. On your own Mac this is ideal — the signature is stable, so macOS keeps your granted permissions across rebuilds. The tradeoff is that on **someone else's** Mac, Gatekeeper requires the one-time right-click → Open step above. Clean double-click installs for everyone would require Apple Developer Program membership + notarization.
+Releases are signed with an Apple **Developer ID** certificate and **notarized**, so macOS opens them with a double-click and remembers the app's permissions across updates. Updates are delivered in-app with [Sparkle](https://sparkle-project.org) from the `appcast.xml` in this repo, pointing at the DMG attached to each GitHub release.
 
 ## License
 

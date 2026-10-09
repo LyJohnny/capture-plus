@@ -26,5 +26,11 @@
 	<string>Personal utility. Not for distribution.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Capture + records your microphone when you enable it for a screen recording.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/LyJohnny/capture-plus/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>uMwdiw8rfDwaeZnJ3Ql4TPsbIRRLh3+lMSw07EgQ0DE=</string>
 </dict>
 </plist>

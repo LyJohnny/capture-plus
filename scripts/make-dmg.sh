@@ -48,6 +48,7 @@ hdiutil create \
   "$OUT" >/dev/null
 
 hdiutil verify "$OUT" >/dev/null && echo "✓ image verifies"
+codesign -s "Developer ID Application" --timestamp "$OUT" && echo "✓ image signed"
 
 echo "▶ Notarizing with Apple (usually 1–5 minutes)…"
 xcrun notarytool submit "$OUT" --keychain-profile capture-plus-notary --wait --timeout 30m \

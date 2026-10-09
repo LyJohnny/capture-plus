@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import ScreenCaptureKit
+import Sparkle
 import SwiftUI
 
 /// Debug-only UI render harness. Activated by the `CAPTUREPLUS_RENDER` env var; never runs in
@@ -27,6 +28,7 @@ enum UITestHarness {
         case "scrolltest": runScrollReverseTest()
         case "autostoptest": runAutoStopTest()
         case "pendingsavetest": runPendingSaveTest()
+        case "updatetest": runUpdateTest()
         case "settingsrender": renderSettings()
         case "probe": runProbe()
         case "cliprender": renderClipboard()
@@ -34,6 +36,52 @@ enum UITestHarness {
         case "countdownlive": showCountdownLive()
         default:
             NSApp.terminate(nil)
+        }
+    }
+
+    /// REAL end-to-end update test: asks Sparkle to check the live feed, download the
+    /// newest release, verify it, and install it in place, relaunching into the new
+    /// version. Run it on a build whose version is LOWER than the latest release;
+    /// afterwards /Applications holds the released version. Needs the network.
+    private static var updateTest: (SPUStandardUpdaterController, UpdateTestDelegate)?
+    private static func runUpdateTest() {
+        try? "".write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+        let delegate = UpdateTestDelegate()
+        let controller = SPUStandardUpdaterController(startingUpdater: false,
+                                                      updaterDelegate: delegate,
+                                                      userDriverDelegate: nil)
+        updateTest = (controller, delegate)
+        delegate.report("running=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "?")\n")
+        controller.updater.automaticallyDownloadsUpdates = true
+        controller.startUpdater()
+        controller.updater.checkForUpdatesInBackground()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 180) {
+            delegate.report("update=FAIL (timed out after 180 s)\n"); exit(1)
+        }
+    }
+
+    private final class UpdateTestDelegate: NSObject, SPUUpdaterDelegate {
+        func report(_ text: String) {
+            let log = ((try? String(contentsOfFile: "/tmp/captureplus-selftest.txt", encoding: .utf8)) ?? "") + text
+            try? log.write(toFile: "/tmp/captureplus-selftest.txt", atomically: true, encoding: .utf8)
+        }
+        func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+            report("foundUpdate=\(item.displayVersionString) build=\(item.versionString)\n")
+        }
+        func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+            report("foundUpdate=none (\(error.localizedDescription))\n"); exit(0)
+        }
+        func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) {
+            report("downloaded=yes\n")
+        }
+        func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
+                     immediateInstallationBlock: @escaping () -> Void) -> Bool {
+            report("verified=yes installingNow=yes\n")
+            immediateInstallationBlock()
+            return true
+        }
+        func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+            report("update=FAIL (\(error.localizedDescription))\n"); exit(1)
         }
     }
 

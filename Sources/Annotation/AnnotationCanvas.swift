@@ -198,17 +198,6 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
         needsDisplay = true
     }
 
-    /// Product-shot sample: one arrow and a short caption, like a real markup.
-    func debugPopulateSample(arrowFrom: CGPoint, arrowTo: CGPoint, caption: String, at: CGPoint) {
-        annotations.append(contentsOf: [
-            Annotation(kind: .arrow(from: arrowFrom, to: arrowTo), stroke: .systemRed, fill: nil,
-                       lineWidth: 10, fontName: textFontName, fontSize: textFontSize),
-            Annotation(kind: .text(caption, at: at), stroke: .systemRed, fill: nil,
-                       lineWidth: 10, fontName: textFontName, fontSize: 52, bold: true),
-        ])
-        needsDisplay = true
-    }
-
     /// Debug / self-test only: drives the real text-place → type → commit path and returns
     /// PASS/FAIL, verifying the fix for "clicking outside a text box spawns another box"
     /// (after commit the tool must be .select, so the dismissing click can't make a box).

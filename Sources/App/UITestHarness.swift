@@ -894,15 +894,11 @@ enum UITestHarness {
                                                                  height: CGFloat(sampleCG.height) / sampleScale))
             sampleSettings.window?.orderOut(nil)
 
-            // 1. Annotation editor with a real-looking markup on top of that screenshot.
+            // 1. Annotation editor holding that screenshot.
             let annotation = AnnotationWindowController()
             annotation.present(image: sample, suggestedName: "Screenshot",
                                defaultSaveDirectory: nil,
                                onCopy: { _ in }, onSave: { _, _ in }, onDelete: {})
-            let w = CGFloat(sampleCG.width), h = CGFloat(sampleCG.height)
-            annotation.debugPopulateSample(arrowFrom: CGPoint(x: w * 0.73, y: h * 0.37),
-                                           arrowTo: CGPoint(x: w * 0.84, y: h * 0.245),
-                                           caption: "Click Grant", at: CGPoint(x: w * 0.44, y: h * 0.385))
             shotKeepAlive.append(annotation)
             try? await Task.sleep(for: .seconds(1))
             await shoot(annotation.window, name: "annotation")

@@ -59,7 +59,7 @@ scripts/build.sh
 scripts/make-dmg.sh
 
 # --- 3. Publish the release first, so the feed never points at a missing file --
-git add project.yml
+git add project.yml Resources/Info.plist
 git commit -q -m "Version $VERSION"
 git push -q origin main
 if [ -n "$NOTES" ]; then
